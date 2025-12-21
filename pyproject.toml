@@ -6,4 +6,10 @@ requires-python = ">=3.10"
 dependencies = [
     "python-dotenv>=1.0.0",
     "ollama>=0.4.0",
+    "fastapi>=0.115.0",
+    "uvicorn>=0.32.0",
+    "pydantic>=2.0.0",
+    "transformers>=4.46.0",
+    "torch>=2.0.0",
+    "sentencepiece>=0.2.0",
 ]

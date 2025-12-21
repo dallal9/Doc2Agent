@@ -12,7 +12,7 @@ ollama pull gemma2:2b
 3. Install deps and run:
 ```bash
 uv sync
-uv run python app/scripts/run_model.py
+uv run python src/scripts/run_model.py
 ```
 
 Set `MODEL_NAME` env var to use a different model.
