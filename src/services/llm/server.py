@@ -1,4 +1,5 @@
 import time
+
 import ollama
 from fastapi import FastAPI
 

@@ -10,4 +10,3 @@ class LLMResponse(BaseModel):
     text: str
     tokens: int
     time_s: float
-

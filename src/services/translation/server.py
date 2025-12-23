@@ -1,3 +1,5 @@
+from contextlib import asynccontextmanager
+
 import torch
 from fastapi import FastAPI
 from transformers import M2M100ForConditionalGeneration, M2M100Tokenizer
@@ -7,16 +9,14 @@ from src.schemas import TranslationRequest, TranslationResponse
 
 logger = setup_logging("translation")
 
-app = FastAPI(title="Translation Service")
-
 MODEL = "facebook/m2m100_418M"
 tokenizer = None
 model = None
 device = None
 
 
-@app.on_event("startup")
-def startup():
+@asynccontextmanager
+async def lifespan(app: FastAPI):
     global tokenizer, model, device
     device = "cuda" if torch.cuda.is_available() else "cpu"
     logger.info("loading model=%s device=%s", MODEL, device)
@@ -26,6 +26,10 @@ def startup():
         torch_dtype=torch.float16 if device == "cuda" else torch.float32,
     ).to(device)
     logger.info("model loaded")
+    yield
+
+
+app = FastAPI(title="Translation Service", lifespan=lifespan)
 
 
 @app.post("/translate", response_model=TranslationResponse)

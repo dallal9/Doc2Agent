@@ -1,4 +1,5 @@
 import os
+
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -11,4 +12,3 @@ LLM_PORT = int(os.getenv("LLM_PORT", "8001"))
 # Translation
 TRANSLATION_MODEL = os.getenv("TRANSLATION_MODEL", "Helsinki-NLP/opus-mt-en-ar")
 TRANSLATION_PORT = int(os.getenv("TRANSLATION_PORT", "8002"))
-

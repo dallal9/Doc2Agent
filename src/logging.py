@@ -39,4 +39,3 @@ def setup_logging(service_name: str) -> logging.Logger:
 
     _configured = True
     return logger
-
