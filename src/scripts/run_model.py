@@ -1,12 +1,11 @@
 import logging
 import os
 import time
-from dotenv import load_dotenv
-import ollama
 
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
-)
+import ollama
+from dotenv import load_dotenv
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
 load_dotenv()
