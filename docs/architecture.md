@@ -60,6 +60,7 @@ myagent/
 ├── src/
 │   ├── __init__.py
 │   ├── config.py                     # Shared config from .env
+│   ├── logging.py                    # Centralized logging (console + file)
 │   │
 │   ├── schemas/                      # Pydantic I/O models
 │   │   ├── __init__.py
@@ -134,6 +135,7 @@ myagent/
 | Translation Service | ✅ Done |
 | Schemas | ✅ Done |
 | Config | ✅ Done |
+| Logging | ✅ Done |
 | Start script | ✅ Done |
 | Agent | ⏳ Planned |
 | Tools (PDF, translate, search) | ⏳ Planned |

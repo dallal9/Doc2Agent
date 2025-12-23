@@ -1,38 +1,46 @@
-import logging
+import torch
 from fastapi import FastAPI
-from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
+from transformers import M2M100ForConditionalGeneration, M2M100Tokenizer
 
-from src.config import TRANSLATION_MODEL
+from src.logging import setup_logging
 from src.schemas import TranslationRequest, TranslationResponse
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
-logger = logging.getLogger("translation")
+logger = setup_logging("translation")
 
 app = FastAPI(title="Translation Service")
 
+MODEL = "facebook/m2m100_418M"
 tokenizer = None
 model = None
-
-
-def load_model():
-    global tokenizer, model
-    if model is None:
-        logger.info("loading model=%s", TRANSLATION_MODEL)
-        tokenizer = AutoTokenizer.from_pretrained(TRANSLATION_MODEL)
-        model = AutoModelForSeq2SeqLM.from_pretrained(TRANSLATION_MODEL)
-        logger.info("model loaded")
+device = None
 
 
 @app.on_event("startup")
 def startup():
-    load_model()
+    global tokenizer, model, device
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    logger.info("loading model=%s device=%s", MODEL, device)
+    tokenizer = M2M100Tokenizer.from_pretrained(MODEL)
+    model = M2M100ForConditionalGeneration.from_pretrained(
+        MODEL,
+        torch_dtype=torch.float16 if device == "cuda" else torch.float32,
+    ).to(device)
+    logger.info("model loaded")
 
 
 @app.post("/translate", response_model=TranslationResponse)
 def translate(req: TranslationRequest) -> TranslationResponse:
     logger.info("translate src=%s tgt=%s len=%d", req.source_lang, req.target_lang, len(req.text))
-    inputs = tokenizer(req.text, return_tensors="pt", truncation=True, max_length=512)
-    outputs = model.generate(**inputs, max_length=512)
+    tokenizer.src_lang = req.source_lang
+    inputs = tokenizer(req.text, return_tensors="pt", truncation=True, max_length=512).to(device)
+
+    with torch.inference_mode():
+        outputs = model.generate(
+            **inputs,
+            forced_bos_token_id=tokenizer.get_lang_id(req.target_lang),
+            max_new_tokens=512,
+            num_beams=4,
+        )
     translated = tokenizer.decode(outputs[0], skip_special_tokens=True)
     logger.info("done len=%d", len(translated))
     return TranslationResponse(translated_text=translated)
@@ -40,5 +48,4 @@ def translate(req: TranslationRequest) -> TranslationResponse:
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "model": TRANSLATION_MODEL}
-
+    return {"status": "ok", "model": MODEL, "device": device}
