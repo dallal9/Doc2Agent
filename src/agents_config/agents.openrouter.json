@@ -1,0 +1,23 @@
+{
+  "default_backend": "openrouter",
+  "backends": {
+    "openrouter": {
+      "type": "openrouter",
+      "api_key_env": "OPENROUTER_API_KEY"
+    }
+  },
+  "agents": {
+    "main": {
+      "model": "openai/gpt-4o-mini",
+      "temperature": 0.2,
+      "backend": "openrouter"
+    },
+    "reviewer": {
+      "model": "openai/gpt-4o-mini",
+      "temperature": 0.1,
+      "backend": "openrouter"
+    }
+  }
+}
+
+
