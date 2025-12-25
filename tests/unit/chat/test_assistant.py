@@ -1,9 +1,18 @@
 import asyncio
 
 
+class _DummyUsage:
+    def __init__(self, input_tokens: int = 0, output_tokens: int = 0):
+        self.input_tokens = input_tokens
+        self.output_tokens = output_tokens
+
+
 class _DummyResult:
     def __init__(self, output: str):
         self.output = output
+
+    def usage(self):
+        return _DummyUsage()
 
 
 class _DummyAgent:

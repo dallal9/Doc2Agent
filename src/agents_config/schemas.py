@@ -18,8 +18,12 @@ def _ensure_env_loaded() -> None:
     global _env_loaded
     if _env_loaded:
         return
-    load_dotenv()
-    setup_logging("config").debug("Loaded .env (if present)")
+    try:
+        load_dotenv()
+        setup_logging("config").debug("Loaded .env (if present)")
+    except OSError as e:
+        # In restricted/sandboxed environments (e.g. unit tests), reading `.env` may be blocked.
+        setup_logging("config").debug("Skipping .env load: %s", e)
     _env_loaded = True
 
 
@@ -33,6 +37,7 @@ class AgentConfig(BaseModel):
     model: str
     temperature: float = 0.2
     backend: str = "local"
+    max_turns: int | None = 20
 
 
 class AgentsConfigFile(BaseModel):
@@ -44,6 +49,7 @@ class AgentsConfigFile(BaseModel):
 class PromptsConfigFile(BaseModel):
     main: str
     reviewer: str
+    validator: str
 
 
 class PersonalInfo(BaseModel):

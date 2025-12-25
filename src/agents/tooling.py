@@ -63,7 +63,9 @@ def register_reader_tools(agent: Agent) -> None:
         pi: PersonalInfo | None = getattr(ctx.deps, "personal_info", None)
         if not pi:
             return {"error": "No personal info available"}
-        return await validate_personal_info(claim, pi)
+        doc: StructuredDocument | None = getattr(ctx.deps, "document", None)
+        text: str = getattr(ctx.deps, "text", "") or ""
+        return await validate_personal_info(claim, pi, document=doc, text=text)
 
 
 def register_ingestion_tools(agent: Agent) -> None:

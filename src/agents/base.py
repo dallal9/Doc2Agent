@@ -4,6 +4,7 @@ from typing import Any, TypeVar
 
 from pydantic import BaseModel
 from pydantic_ai import Agent
+from pydantic_ai.usage import UsageLimits
 
 from src.agents_config import AgentsConfigFile, BackendConfig, PromptsConfigFile
 from src.logging import setup_logging
@@ -41,7 +42,20 @@ async def run_agent(agent: Agent, prompt: str, *, deps: Any = None, label: str =
     logger.info("agent=%s start prompt_chars=%d", label or "agent", len(prompt))
     logger.debug("agent=%s prompt=%s", label, prompt[:500])
 
-    result = await agent.run(prompt, deps=deps) if deps else await agent.run(prompt)
+    usage_limits = getattr(agent, "_usage_limits", None)
+    try:
+        if deps:
+            result = await agent.run(prompt, deps=deps, usage_limits=usage_limits)
+        else:
+            result = await agent.run(prompt, usage_limits=usage_limits)
+    except TypeError as e:
+        # Support simple stubs/mocks in unit tests that don't accept `usage_limits`.
+        if "usage_limits" not in str(e):
+            raise
+        if deps:
+            result = await agent.run(prompt, deps=deps)
+        else:
+            result = await agent.run(prompt)
 
     dt = time.time() - t0
     usage = result.usage()
@@ -84,6 +98,10 @@ def create_agent(
         model_string,
         agent_cfg.temperature,
     )
-    return Agent(
+    agent = Agent(
         model_string, system_prompt=system_prompt, output_type=output_type, deps_type=deps_type
     )
+    agent._usage_limits = (
+        UsageLimits(request_limit=agent_cfg.max_turns) if agent_cfg.max_turns else None
+    )
+    return agent
