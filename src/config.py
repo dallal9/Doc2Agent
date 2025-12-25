@@ -12,3 +12,9 @@ LLM_PORT = int(os.getenv("LLM_PORT", "8001"))
 # Translation
 TRANSLATION_MODEL = os.getenv("TRANSLATION_MODEL", "Helsinki-NLP/opus-mt-en-ar")
 TRANSLATION_PORT = int(os.getenv("TRANSLATION_PORT", "8002"))
+
+# OpenRouter (for cloud inference)
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
+
+# Personal info for validation (dynamic JSON)
+PERSONAL_INFO_JSON = os.getenv("PERSONAL_INFO_JSON", "{}")

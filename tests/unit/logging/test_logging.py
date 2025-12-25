@@ -15,7 +15,6 @@ def test_setup_logging_with_file():
     with tempfile.TemporaryDirectory() as tmpdir:
         log_file = os.path.join(tmpdir, "test.log")
         with patch.dict(os.environ, {"LOG_FILE": log_file}):
-            # Reset configured flag
             import src.logging as log_mod
 
             log_mod._configured = False

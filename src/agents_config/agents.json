@@ -1,0 +1,26 @@
+{
+  "default_backend": "local",
+  "backends": {
+    "local": {
+      "type": "ollama",
+      "base_url": "http://localhost:11434"
+    },
+    "openrouter": {
+      "type": "openrouter",
+      "api_key_env": "OPENROUTER_API_KEY"
+    }
+  },
+  "agents": {
+    "main": {
+      "model": "gemma2:2b",
+      "temperature": 0.2,
+      "backend": "local"
+    },
+    "reviewer": {
+      "model": "gemma2:2b",
+      "temperature": 0.1,
+      "backend": "local"
+    }
+  }
+}
+
