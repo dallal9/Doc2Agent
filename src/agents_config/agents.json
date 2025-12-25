@@ -3,7 +3,7 @@
   "backends": {
     "local": {
       "type": "ollama",
-      "base_url": "http://localhost:11434"
+      "base_url": "http://localhost:11434/v1"
     },
     "openrouter": {
       "type": "openrouter",
@@ -12,12 +12,12 @@
   },
   "agents": {
     "main": {
-      "model": "gemma2:2b",
+      "model": "ministral-3:3b",
       "temperature": 0.2,
       "backend": "local"
     },
     "reviewer": {
-      "model": "gemma2:2b",
+      "model": "ministral-3:3b",
       "temperature": 0.1,
       "backend": "local"
     }

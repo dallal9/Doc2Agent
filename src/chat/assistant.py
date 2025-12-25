@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from src.agents import create_main_agent, create_reviewer_agent
+from src.agents import create_main_agent, create_reviewer_agent, run_agent
 from src.agents.main import MainDeps
 from src.agents_config import load_agents_config, load_personal_info, load_prompts_config
 from src.logging import setup_logging
@@ -39,6 +39,54 @@ class ChatAssistant:
         logger.info("Initializing ChatAssistant backend=%s", self.config.default_backend)
         self._init_agents()
         self.inline_doc_max_chars = int(os.getenv("INLINE_DOC_MAX_CHARS", "20000"))
+
+    def prepare_turn(self, user_message: str) -> tuple[str, MainDeps]:
+        """Prepare prompt + deps for a chat turn and append the user message to history."""
+        self.history.append(("user", user_message))
+        recent = self.history[-12:]
+        history_text = "\n".join(f"{role}: {msg}" for role, msg in recent)
+
+        doc_block = ""
+        if self.text and len(self.text) <= self.inline_doc_max_chars:
+            logger.info(
+                "turn=%s inline_doc=true chars=%s",
+                len(self.history) // 2,
+                len(self.text),
+            )
+            doc_block = f"Document text (full):\n{self.text}\n\n"
+        elif self.text:
+            logger.info(
+                "turn=%s inline_doc=false chars=%s max=%s",
+                len(self.history) // 2,
+                len(self.text),
+                self.inline_doc_max_chars,
+            )
+            doc_block = f"Document text (truncated):\n{self.text[: self.inline_doc_max_chars]}\n\n"
+
+        prompt = f"{doc_block}Conversation so far:\n{history_text}\n\nUser message: {user_message}"
+        deps = MainDeps(document=self.document, text=self.text, personal_info=self.personal_info)
+        return prompt, deps
+
+    @staticmethod
+    def build_review_prompt(user_message: str, draft: str) -> str:
+        return f"User question:\n{user_message}\n\nDraft answer:\n{draft}"
+
+    @staticmethod
+    def parse_reviewer(output: str) -> tuple[str, str, list[str]]:
+        return _parse_reviewer(output)
+
+    @staticmethod
+    def build_retry_prompt(user_message: str, draft: str, fixes: list[str]) -> str:
+        fix_text = "\n".join(f"- {x}" for x in fixes[:8])
+        return (
+            f"User message: {user_message}\n\n"
+            f"Previous draft:\n{draft}\n\n"
+            f"Reviewer fixes:\n{fix_text}"
+        )
+
+    def finalize_turn(self, reply: str) -> str:
+        self.history.append(("assistant", reply))
+        return reply
 
     def _init_agents(self):
         self.main = create_main_agent(self.config, self.prompts)
@@ -83,61 +131,25 @@ class ChatAssistant:
         return "\n".join(lines)
 
     async def chat(self, user_message: str) -> str:
-        self.history.append(("user", user_message))
-        recent = self.history[-12:]
-        history_text = "\n".join(f"{role}: {msg}" for role, msg in recent)
-        doc_block = ""
-        if self.text and len(self.text) <= self.inline_doc_max_chars:
-            logger.info(
-                "turn=%s inline_doc=true chars=%s",
-                len(self.history) // 2,
-                len(self.text),
-            )
-            doc_block = f"Document text (full):\n{self.text}\n\n"
-        elif self.text:
-            logger.info(
-                "turn=%s inline_doc=false chars=%s max=%s",
-                len(self.history) // 2,
-                len(self.text),
-                self.inline_doc_max_chars,
-            )
-            doc_block = f"Document text (truncated):\n{self.text[: self.inline_doc_max_chars]}\n\n"
+        prompt, deps = self.prepare_turn(user_message)
 
-        prompt = f"{doc_block}Conversation so far:\n{history_text}\n\nUser message: {user_message}"
-        deps = MainDeps(document=self.document, text=self.text, personal_info=self.personal_info)
-
-        turn_id = len(self.history) // 2
-        logger.info("turn=%s agent=main start", turn_id)
-        draft = (await self.main.run(prompt, deps=deps)).output
-        logger.info("turn=%s agent=main done chars=%s", turn_id, len(draft or ""))
-
-        review_prompt = f"User question:\n{user_message}\n\nDraft answer:\n{draft}"
-        logger.info("turn=%s agent=reviewer start", turn_id)
-        review = (await self.reviewer.run(review_prompt)).output
+        draft = (await run_agent(self.main, prompt, deps=deps, label="main")).output
+        review_prompt = self.build_review_prompt(user_message, draft)
+        review = (await run_agent(self.reviewer, review_prompt, label="reviewer")).output
         verdict, final, fixes = _parse_reviewer(review)
-        logger.info("turn=%s agent=reviewer verdict=%s", turn_id, verdict or "UNKNOWN")
 
         if verdict == "NEEDS_WORK" and fixes:
-            fix_text = "\n".join(f"- {x}" for x in fixes[:8])
-            retry_prompt = f"""User message: {user_message}
-
-Previous draft:
-{draft}
-
-Reviewer fixes:
-{fix_text}"""
-            logger.info("turn=%s agent=main retry start", turn_id)
-            draft2 = (await self.main.run(retry_prompt, deps=deps)).output
-            logger.info("turn=%s agent=main retry done chars=%s", turn_id, len(draft2 or ""))
-
-            review2_prompt = f"User question:\n{user_message}\n\nDraft answer:\n{draft2}"
-            logger.info("turn=%s agent=reviewer retry start", turn_id)
-            review2 = (await self.reviewer.run(review2_prompt)).output
-            verdict2, final2, _ = _parse_reviewer(review2)
-            logger.info("turn=%s agent=reviewer retry verdict=%s", turn_id, verdict2 or "UNKNOWN")
+            retry_prompt = self.build_retry_prompt(user_message, draft, fixes)
+            draft2 = (
+                await run_agent(self.main, retry_prompt, deps=deps, label="main-retry")
+            ).output
+            review2_prompt = self.build_review_prompt(user_message, draft2)
+            review2 = (
+                await run_agent(self.reviewer, review2_prompt, label="reviewer-retry")
+            ).output
+            _, final2, _ = _parse_reviewer(review2)
             reply = final2 or draft2
         else:
             reply = final or draft
 
-        self.history.append(("assistant", reply))
-        return reply
+        return self.finalize_turn(reply)
