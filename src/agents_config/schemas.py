@@ -11,20 +11,14 @@ from src.logging import setup_logging
 CONFIG_DIR = Path(__file__).parent
 AGENTS_CONFIG_PATH_ENV = "AGENTS_CONFIG_PATH"
 PROMPTS_CONFIG_PATH_ENV = "PROMPTS_CONFIG_PATH"
-_env_loaded = False
 
 
-def _ensure_env_loaded() -> None:
-    global _env_loaded
-    if _env_loaded:
-        return
+_env_path = Path(".env")
+if _env_path.exists():
     try:
-        load_dotenv()
-        setup_logging("config").debug("Loaded .env (if present)")
-    except OSError as e:
-        # In restricted/sandboxed environments (e.g. unit tests), reading `.env` may be blocked.
-        setup_logging("config").debug("Skipping .env load: %s", e)
-    _env_loaded = True
+        load_dotenv(_env_path)
+    except OSError:
+        pass
 
 
 class BackendConfig(BaseModel):
@@ -78,7 +72,6 @@ class PersonalInfo(BaseModel):
 
 
 def load_agents_config(path: Path | None = None) -> AgentsConfigFile:
-    _ensure_env_loaded()
     if path is None:
         env_path = os.getenv(AGENTS_CONFIG_PATH_ENV)
         path = Path(env_path) if env_path else (CONFIG_DIR / "agents.json")
@@ -99,7 +92,6 @@ def load_agents_config(path: Path | None = None) -> AgentsConfigFile:
 
 
 def load_prompts_config(path: Path | None = None) -> PromptsConfigFile:
-    _ensure_env_loaded()
     if path is None:
         env_path = os.getenv(PROMPTS_CONFIG_PATH_ENV)
         path = Path(env_path) if env_path else (CONFIG_DIR / "prompts.json")

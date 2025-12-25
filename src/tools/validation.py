@@ -12,14 +12,9 @@ from src.agents_config import (
     AgentsConfigFile,
     PersonalInfo,
     PromptsConfigFile,
-    load_agents_config,
-    load_prompts_config,
 )
 from src.schemas import StructuredDocument
 from src.tools.retrieval import search_chunks
-
-_validator_agent: Agent | None = None
-_validator_cfg: tuple[AgentsConfigFile, PromptsConfigFile] | None = None
 
 
 class _ValidatorDeps:
@@ -51,15 +46,9 @@ class PersonalInfoValidationResult(BaseModel):
     unknown: list[str] = Field(default_factory=list)
 
 
-def _get_validator_agent() -> Agent[_ValidatorDeps, PersonalInfoValidationResult]:
-    global _validator_agent, _validator_cfg
-    if _validator_agent is not None:
-        return _validator_agent
-
-    if _validator_cfg is None:
-        _validator_cfg = (load_agents_config(), load_prompts_config())
-    agents_config, prompts = _validator_cfg
-
+def create_validator_agent(
+    agents_config: AgentsConfigFile, prompts: PromptsConfigFile
+) -> Agent[_ValidatorDeps, PersonalInfoValidationResult]:
     agent: Agent[_ValidatorDeps, PersonalInfoValidationResult] = create_agent(
         "validator",
         agents_config,
@@ -80,19 +69,18 @@ def _get_validator_agent() -> Agent[_ValidatorDeps, PersonalInfoValidationResult
         spans = await search_chunks(query, doc.citable_spans, top_k=top_k)
         return [s.model_dump() for s in spans]
 
-    _validator_agent = agent
     return agent
 
 
 async def validate_personal_info(
+    agent: Agent[_ValidatorDeps, PersonalInfoValidationResult],
     claim: str,
     personal_info: PersonalInfo,
     *,
     document: StructuredDocument | None = None,
     text: str = "",
 ) -> dict:
-    """Validate a claim against user's personal information using a sub-agent."""
-    agent = _get_validator_agent()
+    """Validate a claim against user's personal information using a validator agent."""
     deps = _ValidatorDeps(document=document, text=text)
     pi_ctx = personal_info.to_prompt_context() or "User's personal information: (none provided)"
     prompt = f"{pi_ctx}\n\nClaim:\n{claim}"
@@ -108,4 +96,5 @@ async def validate_dates(dates: list[dict], reference_date: str | None = None) -
         - Check if date ranges make sense (start < end)
         - Flag suspicious dates (too far in past/future)
     """
+    _ = reference_date
     return dates

@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from src.agents import create_main_agent, create_reviewer_agent, run_agent
+from src.agents import create_main_agent, run_agent
 from src.agents.main import MainDeps
 from src.agents_config import load_agents_config, load_personal_info, load_prompts_config
 from src.logging import setup_logging
@@ -11,21 +11,6 @@ from src.schemas import StructuredDocument
 from src.tools import extract_text_full, parse_pdf_to_document
 
 logger = setup_logging("chat_assistant")
-
-
-def _parse_reviewer(output: str) -> tuple[str, str, list[str]]:
-    txt = (output or "").strip()
-    verdict = (
-        "NEEDS_WORK" if "VERDICT: NEEDS_WORK" in txt else ("OK" if "VERDICT: OK" in txt else "")
-    )
-    final = ""
-    fixes: list[str] = []
-    if "FINAL:" in txt:
-        final = txt.split("FINAL:", 1)[1].strip()
-    if "FIXES:" in txt:
-        fixes_block = txt.split("FIXES:", 1)[1].strip()
-        fixes = [line.strip("- ").strip() for line in fixes_block.splitlines() if line.strip()]
-    return verdict, final, fixes
 
 
 class ChatAssistant:
@@ -67,30 +52,12 @@ class ChatAssistant:
         deps = MainDeps(document=self.document, text=self.text, personal_info=self.personal_info)
         return prompt, deps
 
-    @staticmethod
-    def build_review_prompt(user_message: str, draft: str) -> str:
-        return f"User question:\n{user_message}\n\nDraft answer:\n{draft}"
-
-    @staticmethod
-    def parse_reviewer(output: str) -> tuple[str, str, list[str]]:
-        return _parse_reviewer(output)
-
-    @staticmethod
-    def build_retry_prompt(user_message: str, draft: str, fixes: list[str]) -> str:
-        fix_text = "\n".join(f"- {x}" for x in fixes[:8])
-        return (
-            f"User message: {user_message}\n\n"
-            f"Previous draft:\n{draft}\n\n"
-            f"Reviewer fixes:\n{fix_text}"
-        )
-
     def finalize_turn(self, reply: str) -> str:
         self.history.append(("assistant", reply))
         return reply
 
     def _init_agents(self):
         self.main = create_main_agent(self.config, self.prompts)
-        self.reviewer = create_reviewer_agent(self.config, self.prompts)
 
     def load_pdf(self, path: str) -> str:
         p = Path(path)
@@ -132,24 +99,6 @@ class ChatAssistant:
 
     async def chat(self, user_message: str) -> str:
         prompt, deps = self.prepare_turn(user_message)
-
-        draft = (await run_agent(self.main, prompt, deps=deps, label="main")).output
-        review_prompt = self.build_review_prompt(user_message, draft)
-        review = (await run_agent(self.reviewer, review_prompt, label="reviewer")).output
-        verdict, final, fixes = _parse_reviewer(review)
-
-        if verdict == "NEEDS_WORK" and fixes:
-            retry_prompt = self.build_retry_prompt(user_message, draft, fixes)
-            draft2 = (
-                await run_agent(self.main, retry_prompt, deps=deps, label="main-retry")
-            ).output
-            review2_prompt = self.build_review_prompt(user_message, draft2)
-            review2 = (
-                await run_agent(self.reviewer, review2_prompt, label="reviewer-retry")
-            ).output
-            _, final2, _ = _parse_reviewer(review2)
-            reply = final2 or draft2
-        else:
-            reply = final or draft
-
+        result = await run_agent(self.main, prompt, deps=deps, label="main")
+        reply = result.output or ""
         return self.finalize_turn(reply)

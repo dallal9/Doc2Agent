@@ -16,39 +16,12 @@ async def chat_with_steps(assistant: ChatAssistant, user_message: str) -> str:
     """Chat with visible reasoning steps in Chainlit UI."""
     prompt, deps = assistant.prepare_turn(user_message)
 
-    # Step 1: Main agent draft
     async with cl.Step(name="🤔 Thinking", type="llm") as step:
-        draft = (await run_agent(assistant.main, prompt, deps=deps, label="main")).output
-        step.output = draft
+        result = await run_agent(assistant.main, prompt, deps=deps, label="main")
+        step.output = result.output
 
-    # Step 2: Reviewer
-    async with cl.Step(name="📝 Reviewing", type="llm") as step:
-        review_prompt = assistant.build_review_prompt(user_message, draft)
-        review = (await run_agent(assistant.reviewer, review_prompt, label="reviewer")).output
-        verdict, final, fixes = assistant.parse_reviewer(review)
-        step.output = f"Verdict: {verdict or 'OK'}"
-        if fixes:
-            step.output += f"\nFixes: {fixes}"
-
-    # Step 3: Retry if needed
-    if verdict == "NEEDS_WORK" and fixes:
-        async with cl.Step(name="🔄 Refining", type="llm") as step:
-            retry_prompt = assistant.build_retry_prompt(user_message, draft, fixes)
-            draft2 = (
-                await run_agent(assistant.main, retry_prompt, deps=deps, label="main-retry")
-            ).output
-            step.output = draft2
-
-            review2_prompt = assistant.build_review_prompt(user_message, draft2)
-            review2 = (
-                await run_agent(assistant.reviewer, review2_prompt, label="reviewer-retry")
-            ).output
-            _, final2, _ = assistant.parse_reviewer(review2)
-            reply = assistant.finalize_turn(final2 or draft2)
-    else:
-        return assistant.finalize_turn(final or draft)
-
-    return reply
+    reply = result.output or ""
+    return assistant.finalize_turn(reply)
 
 
 ATTACHMENT_MSG_KEY = "attachment_msg_id"
