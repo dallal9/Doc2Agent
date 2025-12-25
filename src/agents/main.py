@@ -8,7 +8,7 @@ from src.agents.tooling import register_extraction_tools, register_reader_tools
 from src.agents_config import AgentsConfigFile, PersonalInfo, PromptsConfigFile
 from src.logging import setup_logging
 from src.schemas import StructuredDocument
-from src.tools.validation import PersonalInfoValidationResult
+from src.tools.retrieval import search_chunks
 
 logger = setup_logging("main_agent")
 
@@ -41,11 +41,11 @@ def create_main_agent(
         deps_type=MainDeps,
     )
     reviewer = create_reviewer_agent(agents_config, prompts)
-    validator: Agent[MainDeps, PersonalInfoValidationResult] = create_agent(
+    validator: Agent[MainDeps, str] = create_agent(
         "validator",
         agents_config,
         prompts,
-        output_type=PersonalInfoValidationResult,
+        output_type=str,
         deps_type=MainDeps,
     )
 
@@ -70,15 +70,16 @@ def create_main_agent(
         return result.output or ""
 
     @agent.tool
-    async def validate_against_personal_info(ctx, claim: str) -> dict:
+    async def validate_against_personal_info(ctx, claim: str) -> str:
+        """Compare a claim from the document with the user's personal info."""
         logger.info("tool=validate_against_personal_info claim=%r", claim[:200])
         pi: PersonalInfo | None = getattr(ctx.deps, "personal_info", None)
         if not pi:
-            return {"error": "No personal info available"}
-        pi_ctx = pi.to_prompt_context() or "User's personal information: (none provided)"
-        prompt = f"{pi_ctx}\n\nClaim:\n{claim}"
+            return "No personal info available to validate against."
+        pi_ctx = pi.to_prompt_context() or "(no personal info)"
+        prompt = f"User's personal info:\n{pi_ctx}\n\nDocument text to verify:\n{claim}"
         result = await run_agent(validator, prompt, deps=ctx.deps, label="validator")
-        return result.output.model_dump()
+        return result.output or ""
 
     register_reader_tools(agent)
     register_extraction_tools(agent)

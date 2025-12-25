@@ -31,6 +31,10 @@ class ChatAssistant:
         recent = self.history[-12:]
         history_text = "\n".join(f"{role}: {msg}" for role, msg in recent)
 
+        pi_block = ""
+        if self.personal_info and self.personal_info.data:
+            pi_block = f"{self.personal_info.to_prompt_context()}\n\n"
+
         doc_block = ""
         if self.text and len(self.text) <= self.inline_doc_max_chars:
             logger.info(
@@ -48,8 +52,15 @@ class ChatAssistant:
             )
             doc_block = f"Document text (truncated):\n{self.text[: self.inline_doc_max_chars]}\n\n"
 
-        prompt = f"{doc_block}Conversation so far:\n{history_text}\n\nUser message: {user_message}"
-        deps = MainDeps(document=self.document, text=self.text, personal_info=self.personal_info)
+        prompt = (
+            f"{pi_block}{doc_block}Conversation so far:\n{history_text}\n\n"
+            f"User message: {user_message}"
+        )
+        deps = MainDeps(
+            document=self.document,
+            text=self.text,
+            personal_info=self.personal_info,
+        )
         return prompt, deps
 
     def finalize_turn(self, reply: str) -> str:

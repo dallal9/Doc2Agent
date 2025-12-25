@@ -208,3 +208,4 @@ __marimo__/
 
 .vscode/
 .chainlit/
+.DS_Store

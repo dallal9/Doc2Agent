@@ -2,6 +2,10 @@
 
 import asyncio
 
+from src.bootstrap import init_app
+
+init_app()
+
 from src.chat import ChatAssistant
 from src.logging import setup_logging
 

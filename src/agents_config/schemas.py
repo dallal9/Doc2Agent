@@ -3,7 +3,6 @@ import os
 from pathlib import Path
 from typing import Any, Literal, cast
 
-from dotenv import load_dotenv
 from pydantic import BaseModel, Field
 
 from src.logging import setup_logging
@@ -11,14 +10,6 @@ from src.logging import setup_logging
 CONFIG_DIR = Path(__file__).parent
 AGENTS_CONFIG_PATH_ENV = "AGENTS_CONFIG_PATH"
 PROMPTS_CONFIG_PATH_ENV = "PROMPTS_CONFIG_PATH"
-
-
-_env_path = Path(".env")
-if _env_path.exists():
-    try:
-        load_dotenv(_env_path)
-    except OSError:
-        pass
 
 
 class BackendConfig(BaseModel):

@@ -1,27 +1,85 @@
-"""Chainlit app for PDF Q&A with smooth single-attachment behavior."""
-
 import os
-import shutil
-import tempfile
-from pathlib import Path
-from uuid import uuid4
+import re
 
 import chainlit as cl
 
+from src.bootstrap import init_app
+
+init_app()
+
 from src.agents import run_agent
 from src.chat import ChatAssistant
+from src.logging import setup_logging
+
+logger = setup_logging("chainlit_app")
+SHOW_REASONING = os.getenv("SHOW_REASONING", "true").lower() == "true"
 
 
-async def chat_with_steps(assistant: ChatAssistant, user_message: str) -> str:
+async def chat_with_steps(assistant, user_message: str) -> None:
     """Chat with visible reasoning steps in Chainlit UI."""
     prompt, deps = assistant.prepare_turn(user_message)
 
-    async with cl.Step(name="🤔 Thinking", type="llm") as step:
+    async with cl.Step(name="🤔 Thinking...", type="llm") as step:
         result = await run_agent(assistant.main, prompt, deps=deps, label="main")
-        step.output = result.output
+        raw_output = result.output or ""
+        step_parts = []
 
-    reply = result.output or ""
-    return assistant.finalize_turn(reply)
+        # Extract reasoning traces if present
+        think_match = re.search(r"<think>(.*?)</think>", raw_output, re.DOTALL)
+        if SHOW_REASONING and think_match:
+            step_parts.append(think_match.group(1).strip())
+            reply = re.sub(r"<think>.*?</think>", "", raw_output, flags=re.DOTALL).strip()
+        else:
+            reply = raw_output
+
+        # Map tool names to agent labels
+        TOOL_AGENTS = {
+            "validate_against_personal_info": "validator",
+            "review_draft": "reviewer",
+        }
+
+        # Collect tool calls and returns
+        tool_info = {}  # tool_call_id -> {name, args, result}
+        for msg in result.all_messages():
+            for p in getattr(msg, "parts", []):
+                part_kind = getattr(p, "part_kind", "")
+                if part_kind == "tool-call" and hasattr(p, "tool_name"):
+                    # Tool call
+                    args_str = ""
+                    args = getattr(p, "args", None)
+                    if args:
+                        if isinstance(args, dict):
+                            args_str = ", ".join(args.keys())
+                        elif isinstance(args, str):
+                            # JSON string - just show truncated
+                            args_str = "..."
+                    tid = getattr(p, "tool_call_id", id(p))
+                    tool_info[tid] = {"name": p.tool_name, "args": args_str, "result": None}
+                elif part_kind == "tool-return" and hasattr(p, "content"):
+                    # Tool return
+                    tid = getattr(p, "tool_call_id", None)
+                    if tid and tid in tool_info:
+                        content = str(p.content)[:150]
+                        tool_info[tid]["result"] = content
+
+        # Format tool calls for display
+        for info in tool_info.values():
+            agent = TOOL_AGENTS.get(info["name"], "")
+            agent_label = f" → {agent}" if agent else ""
+            line = f"🔧 **{info['name']}**({info['args']}){agent_label}"
+            if info["result"]:
+                line += f"\n   ↳ {info['result']}..."
+            step_parts.append(line)
+
+        # Build step output
+        if step_parts:
+            step.output = "\n\n".join(step_parts)
+        else:
+            usage = result.usage()
+            step.output = f"📝 Direct answer ({usage.output_tokens} tokens)"
+
+    assistant.finalize_turn(reply)
+    await cl.Message(content=reply).send()
 
 
 ATTACHMENT_MSG_KEY = "attachment_msg_id"
@@ -29,26 +87,7 @@ CURRENT_FILE_NAME_KEY = "current_file_name"
 CURRENT_FILE_PATH_KEY = "current_file_path"
 
 
-def _safe_unlink(path: str | None) -> None:
-    if not path:
-        return
-    try:
-        os.remove(path)
-    except FileNotFoundError:
-        pass
-
-
-def _persist_pdf_to_tmp(src_path: str, original_name: str) -> str:
-    suffix = Path(original_name).suffix or ".pdf"
-    dest = Path(tempfile.gettempdir()) / f"myagent_{uuid4().hex}{suffix}"
-    shutil.copy(src_path, dest)
-    return str(dest)
-
-
-async def _reset_attachment(assistant: ChatAssistant) -> None:
-    # Delete persisted file
-    _safe_unlink(cl.user_session.get(CURRENT_FILE_PATH_KEY))
-
+async def _reset_attachment(assistant) -> None:
     # Reset session + assistant
     cl.user_session.set(CURRENT_FILE_NAME_KEY, None)
     cl.user_session.set(CURRENT_FILE_PATH_KEY, None)
@@ -66,12 +105,8 @@ async def _upsert_attachment_status_message(load_result: str | None = None) -> N
     msg_id = cl.user_session.get(ATTACHMENT_MSG_KEY)
 
     if file_name and file_path:
-        elements = [
-            # Viewer in the chat UI
-            cl.Pdf(name=file_name, path=file_path, display="inline"),
-            # Optional: a download button
-            cl.File(name=file_name, path=file_path, display="inline"),
-        ]
+        # Avoid re-sending file elements here; Chainlit may duplicate them in `.files/`.
+        elements = []
         actions = [
             cl.Action(
                 name="detach_file",
@@ -117,14 +152,14 @@ async def start():
 
 @cl.action_callback("detach_file")
 async def on_detach_file(_: cl.Action):
-    assistant: ChatAssistant = cl.user_session.get("assistant")
+    assistant = cl.user_session.get("assistant")
     await _reset_attachment(assistant)
     await cl.Message(content="✅ Attachment removed.").send()
 
 
 @cl.on_message
 async def on_message(message: cl.Message):
-    assistant: ChatAssistant = cl.user_session.get("assistant")
+    assistant = cl.user_session.get("assistant")
 
     # Keep your /clear command as a text equivalent (optional)
     if message.content.strip().lower() == "/clear":
@@ -138,19 +173,23 @@ async def on_message(message: cl.Message):
         None,
     )
     if element:
-        _safe_unlink(cl.user_session.get(CURRENT_FILE_PATH_KEY))
-        dest_path = _persist_pdf_to_tmp(element.path, element.name)
-        result = assistant.load_pdf(dest_path)
+        current_name = cl.user_session.get(CURRENT_FILE_NAME_KEY)
+        current_path = cl.user_session.get(CURRENT_FILE_PATH_KEY)
+        if current_name == element.name and current_path:
+            # Some clients resend the attachment each message; keep existing attachment.
+            if message.content.strip():
+                await chat_with_steps(assistant, message.content)
+            return
+
+        result = assistant.load_pdf(element.path)
 
         cl.user_session.set(CURRENT_FILE_NAME_KEY, element.name)
-        cl.user_session.set(CURRENT_FILE_PATH_KEY, dest_path)
+        cl.user_session.set(CURRENT_FILE_PATH_KEY, element.path)
         await _upsert_attachment_status_message(load_result=f"📄 Loaded\n{result}")
 
         if message.content.strip():
-            response = await chat_with_steps(assistant, message.content)
-            await cl.Message(content=response).send()
+            await chat_with_steps(assistant, message.content)
         return
 
     # Regular chat with visible reasoning steps
-    response = await chat_with_steps(assistant, message.content)
-    await cl.Message(content=response).send()
+    await chat_with_steps(assistant, message.content)
