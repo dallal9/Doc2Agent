@@ -7,7 +7,6 @@ from .pdf import (
     parse_pdf_to_document,
 )
 from .retrieval import search_chunks, search_spans_with_patterns, search_with_patterns
-from .validation import validate_dates, validate_personal_info
 
 __all__ = [
     "parse_pdf",
@@ -19,6 +18,4 @@ __all__ = [
     "search_chunks",
     "search_spans_with_patterns",
     "search_with_patterns",
-    "validate_personal_info",
-    "validate_dates",
 ]

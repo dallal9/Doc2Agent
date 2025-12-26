@@ -85,31 +85,3 @@ class ChatAssistant:
             len(self.text),
         )
         return f"Loaded {len(self.document.pages)} pages, {len(self.document.citable_spans)} spans"
-
-    def set_text(self, text: str) -> str:
-        self.text = text
-        self.document = None
-        return f"Text set ({len(text)} chars)"
-
-    def reset_chat(self) -> str:
-        self.history = []
-        return "Chat history cleared"
-
-    def show_info(self) -> str:
-        lines = [
-            f"Backend: {self.config.default_backend}",
-            f"Personal info: {self.personal_info.data or 'None'}",
-            f"Document loaded: {self.document is not None}",
-            f"Text length: {len(self.text)} chars",
-            f"Chat turns: {len(self.history)}",
-        ]
-        if self.document:
-            lines.append(f"Pages: {len(self.document.pages)}")
-            lines.append(f"Sections: {self.document.sections[:5]}")
-        return "\n".join(lines)
-
-    async def chat(self, user_message: str) -> str:
-        prompt, deps = self.prepare_turn(user_message)
-        result = await run_agent(self.main, prompt, deps=deps, label="main")
-        reply = result.output or ""
-        return self.finalize_turn(reply)

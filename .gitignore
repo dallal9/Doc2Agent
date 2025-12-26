@@ -209,3 +209,4 @@ __marimo__/
 .vscode/
 .chainlit/
 .DS_Store
+docs/local_*.md
