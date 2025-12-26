@@ -13,6 +13,8 @@ from src.logging import setup_logging
 
 logger = setup_logging("chainlit_app")
 SHOW_REASONING = os.getenv("SHOW_REASONING", "true").lower() == "true"
+USE_ENRICHMENT = os.getenv("USE_ENRICHMENT", "true").lower() == "true"
+SHOW_INGESTION_LOGS = os.getenv("SHOW_INGESTION_LOGS", "false").lower() == "true"
 
 
 async def chat_with_steps(assistant, user_message: str) -> None:
@@ -39,24 +41,21 @@ async def chat_with_steps(assistant, user_message: str) -> None:
         }
 
         # Collect tool calls and returns
-        tool_info = {}  # tool_call_id -> {name, args, result}
+        tool_info = {}
         for msg in result.all_messages():
             for p in getattr(msg, "parts", []):
                 part_kind = getattr(p, "part_kind", "")
                 if part_kind == "tool-call" and hasattr(p, "tool_name"):
-                    # Tool call
                     args_str = ""
                     args = getattr(p, "args", None)
                     if args:
                         if isinstance(args, dict):
                             args_str = ", ".join(args.keys())
                         elif isinstance(args, str):
-                            # JSON string - just show truncated
                             args_str = "..."
                     tid = getattr(p, "tool_call_id", id(p))
                     tool_info[tid] = {"name": p.tool_name, "args": args_str, "result": None}
                 elif part_kind == "tool-return" and hasattr(p, "content"):
-                    # Tool return
                     tid = getattr(p, "tool_call_id", None)
                     if tid and tid in tool_info:
                         content = str(p.content)[:150]
@@ -71,7 +70,6 @@ async def chat_with_steps(assistant, user_message: str) -> None:
                 line += f"\n   ↳ {info['result']}..."
             step_parts.append(line)
 
-        # Build step output
         if step_parts:
             step.output = "\n\n".join(step_parts)
         else:
@@ -87,14 +85,44 @@ CURRENT_FILE_NAME_KEY = "current_file_name"
 CURRENT_FILE_PATH_KEY = "current_file_path"
 
 
+async def _show_cached_documents(assistant) -> None:
+    """Display cached documents with selection and delete buttons."""
+    docs = assistant.list_cached_documents()
+    if not docs:
+        await cl.Message(content="📚 No cached documents. Upload a PDF to get started.").send()
+        return
+
+    actions = []
+    for doc in docs[:10]:  # Limit to 10 most recent
+        actions.append(
+            cl.Action(
+                name="select_doc",
+                payload={
+                    "doc_id": doc.doc_id,
+                    "file_name": doc.file_name,
+                    "file_path": doc.file_path,
+                },
+                label=f"📄 {doc.file_name} ({doc.page_count} pages)",
+            )
+        )
+        actions.append(
+            cl.Action(
+                name="delete_doc",
+                payload={"doc_id": doc.doc_id, "file_name": doc.file_name},
+                label=f"🗑️ Delete {doc.file_name}",
+            )
+        )
+    content = f"📚 **Cached Documents** ({len(docs)} total)\nSelect one to load, delete, or upload a new PDF:"
+    await cl.Message(content=content, actions=actions).send()
+
+
 async def _reset_attachment(assistant) -> None:
-    # Reset session + assistant
     cl.user_session.set(CURRENT_FILE_NAME_KEY, None)
     cl.user_session.set(CURRENT_FILE_PATH_KEY, None)
     assistant.text = ""
     assistant.document = None
-
-    # Update the pinned status message (if present)
+    assistant.enriched_doc = None
+    assistant.document_id = None
     await _upsert_attachment_status_message()
 
 
@@ -105,7 +133,6 @@ async def _upsert_attachment_status_message(load_result: str | None = None) -> N
     msg_id = cl.user_session.get(ATTACHMENT_MSG_KEY)
 
     if file_name and file_path:
-        # Avoid re-sending file elements here; Chainlit may duplicate them in `.files/`.
         elements = []
         actions = [
             cl.Action(
@@ -122,7 +149,6 @@ async def _upsert_attachment_status_message(load_result: str | None = None) -> N
         actions = []
         content = "📎 **No file attached.** Upload a PDF to attach it."
 
-    # Create once, then update in place
     if msg_id:
         msg = cl.Message(content=content, elements=elements, actions=actions)
         msg.id = msg_id
@@ -137,16 +163,17 @@ async def start():
     assistant = ChatAssistant()
     cl.user_session.set("assistant", assistant)
 
-    # Start clean
     cl.user_session.set(CURRENT_FILE_NAME_KEY, None)
     cl.user_session.set(CURRENT_FILE_PATH_KEY, None)
     cl.user_session.set(ATTACHMENT_MSG_KEY, None)
 
     await cl.Message(
-        content="👋 Hi! Upload a PDF (📎) to attach it and ask questions.\n"
-        "You can remove it using the button under the attachment."
+        content="👋 Hi! Upload a PDF (📎) or select a cached document below.\n"
+        "Use `/docs` to list cached documents, `/clear` to remove attachment."
     ).send()
 
+    # Show cached documents on start
+    await _show_cached_documents(assistant)
     await _upsert_attachment_status_message()
 
 
@@ -157,17 +184,64 @@ async def on_detach_file(_: cl.Action):
     await cl.Message(content="✅ Attachment removed.").send()
 
 
+@cl.action_callback("select_doc")
+async def on_select_doc(action: cl.Action):
+    """Handle cached document selection."""
+    assistant = cl.user_session.get("assistant")
+    doc_id = action.payload.get("doc_id")
+    file_name = action.payload.get("file_name")
+    file_path = action.payload.get("file_path")
+
+    result = assistant.load_cached_document(doc_id)
+    cl.user_session.set(CURRENT_FILE_NAME_KEY, file_name)
+    cl.user_session.set(CURRENT_FILE_PATH_KEY, file_path)
+    await _upsert_attachment_status_message(load_result=f"📄 {result}")
+
+    # Show PDF preview if file exists
+    if file_path and os.path.exists(file_path):
+        await cl.Message(
+            content=f"**Preview of {file_name}:**",
+            elements=[cl.Pdf(name=file_name, path=file_path, display="inline")],
+        ).send()
+    else:
+        await cl.Message(
+            content=f"✅ {result}\n\n_(Original file not available for preview)_"
+        ).send()
+
+
+@cl.action_callback("delete_doc")
+async def on_delete_doc(action: cl.Action):
+    """Handle cached document deletion."""
+    assistant = cl.user_session.get("assistant")
+    doc_id = action.payload.get("doc_id")
+    file_name = action.payload.get("file_name")
+
+    result = assistant.delete_cached_document(doc_id)
+    await cl.Message(content=f"🗑️ {result}").send()
+
+    # Clear attachment if deleted doc was active
+    if cl.user_session.get(CURRENT_FILE_NAME_KEY) == file_name:
+        await _reset_attachment(assistant)
+
+    # Refresh the document list
+    await _show_cached_documents(assistant)
+
+
 @cl.on_message
 async def on_message(message: cl.Message):
     assistant = cl.user_session.get("assistant")
+    cmd = message.content.strip().lower()
 
-    # Keep your /clear command as a text equivalent (optional)
-    if message.content.strip().lower() == "/clear":
+    if cmd == "/clear":
         await _reset_attachment(assistant)
         await cl.Message(content="✅ Attachment removed.").send()
         return
 
-    # Handle file uploads (replace existing)
+    if cmd == "/docs":
+        await _show_cached_documents(assistant)
+        return
+
+    # Handle file uploads
     element = next(
         (e for e in (message.elements or []) if getattr(e, "mime", None) == "application/pdf"),
         None,
@@ -176,20 +250,30 @@ async def on_message(message: cl.Message):
         current_name = cl.user_session.get(CURRENT_FILE_NAME_KEY)
         current_path = cl.user_session.get(CURRENT_FILE_PATH_KEY)
         if current_name == element.name and current_path:
-            # Some clients resend the attachment each message; keep existing attachment.
             if message.content.strip():
                 await chat_with_steps(assistant, message.content)
             return
 
-        result = assistant.load_pdf(element.path)
+        # Use new async ingest_pdf with enrichment and progress callback
+        async with cl.Step(name="📄 Ingesting PDF...", type="tool") as step:
+            step.output = "Initializing parser..."
+
+            async def on_progress(current: int, total: int):
+                if SHOW_INGESTION_LOGS:
+                    step.output = f"Enriching page {current}/{total}..."
+                    await step.update()
+
+            result = await assistant.ingest_pdf(
+                element.path, enrich=USE_ENRICHMENT, on_progress=on_progress
+            )
+            step.output = result
 
         cl.user_session.set(CURRENT_FILE_NAME_KEY, element.name)
         cl.user_session.set(CURRENT_FILE_PATH_KEY, element.path)
-        await _upsert_attachment_status_message(load_result=f"📄 Loaded\n{result}")
+        await _upsert_attachment_status_message(load_result=f"📄 {result}")
 
         if message.content.strip():
             await chat_with_steps(assistant, message.content)
         return
 
-    # Regular chat with visible reasoning steps
     await chat_with_steps(assistant, message.content)

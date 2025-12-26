@@ -59,8 +59,9 @@ async def run_agent(agent: Agent, prompt: str, *, deps: Any = None, label: str =
 
     dt = time.time() - t0
     usage = result.usage()
-    output = result.output or ""
+    output = result.output
     tps = usage.output_tokens / dt if dt > 0 else 0
+    out_chars = len(output) if isinstance(output, str) else 0
 
     logger.info(
         "agent=%s done time=%.2fs in_tok=%d out_tok=%d tps=%.1f out_chars=%d",
@@ -69,7 +70,7 @@ async def run_agent(agent: Agent, prompt: str, *, deps: Any = None, label: str =
         usage.input_tokens,
         usage.output_tokens,
         tps,
-        len(output),
+        out_chars,
     )
     logger.debug("agent=%s output=%s", label, output[:500] if isinstance(output, str) else output)
     return result

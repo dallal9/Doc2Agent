@@ -210,3 +210,4 @@ __marimo__/
 .chainlit/
 .DS_Store
 docs/local_*.md
+data/

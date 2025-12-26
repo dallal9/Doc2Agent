@@ -1,14 +1,22 @@
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from pydantic_ai import Agent
 
 from src.agents.base import create_agent, run_agent
 from src.agents.reviewer import create_reviewer_agent
-from src.agents.tooling import register_extraction_tools, register_reader_tools
+from src.agents.tooling import (
+    register_database_tools,
+    register_extraction_tools,
+    register_reader_tools,
+)
 from src.agents_config import AgentsConfigFile, PersonalInfo, PromptsConfigFile
 from src.logging import setup_logging
 from src.schemas import StructuredDocument
-from src.tools.retrieval import search_chunks
+
+if TYPE_CHECKING:
+    from src.storage import SQLiteStore
 
 logger = setup_logging("main_agent")
 
@@ -24,10 +32,14 @@ class MainDeps:
         document: StructuredDocument | None = None,
         text: str = "",
         personal_info: PersonalInfo | None = None,
+        document_id: str | None = None,
+        store: "SQLiteStore | None" = None,
     ):
         self.document = document
         self.text = text
         self.personal_info = personal_info
+        self.document_id = document_id
+        self.store = store
 
 
 def create_main_agent(
@@ -83,4 +95,5 @@ def create_main_agent(
 
     register_reader_tools(agent)
     register_extraction_tools(agent)
+    register_database_tools(agent)
     return agent

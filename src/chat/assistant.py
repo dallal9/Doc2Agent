@@ -1,16 +1,22 @@
 from __future__ import annotations
 
+import hashlib
 import os
+import shutil
 from pathlib import Path
+from typing import Callable
 
-from src.agents import create_main_agent, run_agent
+from src.agents import create_ingestion_agent, create_main_agent, ingest_page, run_agent
 from src.agents.main import MainDeps
 from src.agents_config import load_agents_config, load_personal_info, load_prompts_config
 from src.logging import setup_logging
-from src.schemas import StructuredDocument
-from src.tools import extract_text_full, parse_pdf_to_document
+from src.schemas import DocumentMetadata, DocumentSchema, StructuredDocument
+from src.storage import SQLiteStore
+from src.tools import PDFParser, extract_text_full, parse_pdf_to_document
 
 logger = setup_logging("chat_assistant")
+
+ProgressCallback = Callable[[int, int], None]  # (current_page, total_pages)
 
 
 class ChatAssistant:
@@ -19,14 +25,27 @@ class ChatAssistant:
         self.prompts = load_prompts_config()
         self.personal_info = load_personal_info()
         self.document: StructuredDocument | None = None
+        self.enriched_doc: DocumentSchema | None = None
+        self.document_id: str | None = None
         self.text: str = ""
         self.history: list[tuple[str, str]] = []
         logger.info("Initializing ChatAssistant backend=%s", self.config.default_backend)
         self._init_agents()
         self.inline_doc_max_chars = int(os.getenv("INLINE_DOC_MAX_CHARS", "20000"))
+        self.pdf_json_max_bytes = int(os.getenv("PDF_JSON_MAX_BYTES", "2000000"))
+        self.pdf_json_dir = os.getenv("PDF_JSON_DIR", "data")
+        # SQLite dir for all database files
+        self.pdf_sqlite_dir = Path(os.getenv("PDF_SQLITE_DIR", "data"))
+        self.pdf_sqlite_dir.mkdir(exist_ok=True)
+        self.pdf_sqlite_path = self.pdf_sqlite_dir / "pdf_data.db"
+        # PDF storage dir for permanent copies
+        self.pdf_storage_dir = Path(os.getenv("PDF_STORAGE_DIR", "data/pdfs"))
+        self.pdf_storage_dir.mkdir(parents=True, exist_ok=True)
+        # Initialize SQLite store eagerly for unified caching
+        self.store = SQLiteStore(str(self.pdf_sqlite_path))
 
     def prepare_turn(self, user_message: str) -> tuple[str, MainDeps]:
-        """Prepare prompt + deps for a chat turn and append the user message to history."""
+        """Prepare prompt + deps for a chat turn."""
         self.history.append(("user", user_message))
         recent = self.history[-12:]
         history_text = "\n".join(f"{role}: {msg}" for role, msg in recent)
@@ -36,30 +55,32 @@ class ChatAssistant:
             pi_block = f"{self.personal_info.to_prompt_context()}\n\n"
 
         doc_block = ""
-        if self.text and len(self.text) <= self.inline_doc_max_chars:
-            logger.info(
-                "turn=%s inline_doc=true chars=%s",
-                len(self.history) // 2,
-                len(self.text),
+        if self.enriched_doc and self.enriched_doc.total_chars() <= self.inline_doc_max_chars:
+            # Inline enriched pages for small docs
+            pages_summary = "\n".join(
+                (
+                    f"[Page {p.page_num}] {p.text[:500]}..."
+                    if len(p.text) > 500
+                    else f"[Page {p.page_num}] {p.text}"
+                )
+                for p in self.enriched_doc.pages
             )
+            doc_block = f"Document pages:\n{pages_summary}\n\n"
+            logger.info("turn=%d inline_enriched=true", len(self.history) // 2)
+        elif self.text and len(self.text) <= self.inline_doc_max_chars:
             doc_block = f"Document text (full):\n{self.text}\n\n"
+            logger.info("turn=%d inline_doc=true chars=%d", len(self.history) // 2, len(self.text))
         elif self.text:
-            logger.info(
-                "turn=%s inline_doc=false chars=%s max=%s",
-                len(self.history) // 2,
-                len(self.text),
-                self.inline_doc_max_chars,
-            )
-            doc_block = f"Document text (truncated):\n{self.text[: self.inline_doc_max_chars]}\n\n"
+            doc_block = f"Document text (truncated):\n{self.text[:self.inline_doc_max_chars]}\n\n"
+            logger.info("turn=%d inline_doc=false use_tools=true", len(self.history) // 2)
 
-        prompt = (
-            f"{pi_block}{doc_block}Conversation so far:\n{history_text}\n\n"
-            f"User message: {user_message}"
-        )
+        prompt = f"{pi_block}{doc_block}Conversation so far:\n{history_text}\n\nUser message: {user_message}"
         deps = MainDeps(
             document=self.document,
             text=self.text,
             personal_info=self.personal_info,
+            document_id=self.document_id,
+            store=self.store,
         )
         return prompt, deps
 
@@ -71,6 +92,7 @@ class ChatAssistant:
         self.main = create_main_agent(self.config, self.prompts)
 
     def load_pdf(self, path: str) -> str:
+        """Legacy loader using pypdf."""
         p = Path(path)
         if not p.exists():
             logger.warning("File not found: %s", path)
@@ -85,3 +107,124 @@ class ChatAssistant:
             len(self.text),
         )
         return f"Loaded {len(self.document.pages)} pages, {len(self.document.citable_spans)} spans"
+
+    async def ingest_pdf(
+        self, file_path: str, enrich: bool = True, on_progress: ProgressCallback | None = None
+    ) -> str:
+        """Ingest PDF with cache-first logic, PyMuPDF parser, and optional LLM enrichment."""
+        p = Path(file_path)
+        if not p.exists():
+            logger.warning("File not found: %s", file_path)
+            return f"File not found: {file_path}"
+
+        # Get file stats for cache check
+        stat = p.stat()
+        mod_time = stat.st_mtime
+
+        # Check cache first
+        existing = self.store.get_document_by_path(file_path)
+        if existing and existing.file_mod_time == mod_time:
+            logger.info("Cache hit for %s (doc_id=%s)", file_path, existing.doc_id)
+            cached_doc = self.store.load_document(existing.doc_id)
+            if cached_doc:
+                self._set_active_document(cached_doc)
+                return f"Loaded cached: {existing.file_name} ({existing.page_count} pages)"
+
+        # Cache miss - parse PDF
+        logger.info("Ingesting PDF: %s enrich=%s", file_path, enrich)
+        with PDFParser(file_path) as parser:
+            doc = parser.parse_document()
+
+        # Add cache invalidation fields to metadata
+        file_hash = hashlib.md5(p.read_bytes()).hexdigest()
+        doc.metadata.file_mod_time = mod_time
+        doc.metadata.file_hash = file_hash
+
+        # Copy PDF to permanent storage
+        permanent_path = self.pdf_storage_dir / f"{doc.metadata.doc_id}.pdf"
+        shutil.copy2(file_path, permanent_path)
+        doc.metadata.file_path = str(permanent_path)
+        logger.info("Copied PDF to: %s", permanent_path)
+
+        if enrich:
+            ing_agent = create_ingestion_agent(self.config, self.prompts)
+            total = len(doc.pages)
+            for i, page in enumerate(doc.pages, 1):
+                page_input = page.model_dump()
+                try:
+                    enriched = await ingest_page(ing_agent, page_input)
+                    # Merge enriched fields
+                    page.contains_names = enriched.contains_names
+                    page.contains_dates = enriched.contains_dates
+                    page.contains_locations = enriched.contains_locations
+                    page.contains_signatures = enriched.contains_signatures
+                    page.contains_personal_info = enriched.contains_personal_info
+                    page.headings = enriched.headings
+                    page.languages = enriched.languages
+                    page.keywords = enriched.keywords
+                except Exception as e:
+                    logger.warning("ingestion failed page=%d error=%s", page.page_num, e)
+                if on_progress:
+                    await on_progress(i, total)
+
+        self._set_active_document(doc)
+
+        # Always save to SQLite (unified cache)
+        self.store.insert_document(doc)
+        logger.info("Saved to SQLite: %s", self.pdf_sqlite_path)
+
+        # Optional JSON export for small files
+        if doc.metadata.file_size_bytes <= self.pdf_json_max_bytes:
+            data_dir = Path(self.pdf_json_dir)
+            data_dir.mkdir(exist_ok=True)
+            json_path = data_dir / f"{doc.metadata.doc_id}.json"
+            json_path.write_text(doc.model_dump_json(indent=2))
+            logger.info("Exported to JSON: %s", json_path)
+
+        return f"Ingested {doc.metadata.page_count} pages (doc_id={doc.metadata.doc_id})"
+
+    def _set_active_document(self, doc: DocumentSchema) -> None:
+        """Set the active document for chat context."""
+        self.enriched_doc = doc
+        self.document_id = doc.metadata.doc_id
+        self.text = "\n\n".join(p.text for p in doc.pages)
+
+    def list_cached_documents(self) -> list[DocumentMetadata]:
+        """List all cached documents from SQLite."""
+        return self.store.list_documents()
+
+    def load_cached_document(self, doc_id: str) -> str:
+        """Load a cached document by ID."""
+        doc = self.store.load_document(doc_id)
+        if not doc:
+            logger.warning("Document not found: %s", doc_id)
+            return f"Document not found: {doc_id}"
+        self._set_active_document(doc)
+        logger.info("Loaded cached doc_id=%s pages=%d", doc_id, doc.metadata.page_count)
+        return f"Loaded {doc.metadata.file_name} ({doc.metadata.page_count} pages)"
+
+    def delete_cached_document(self, doc_id: str) -> str:
+        """Delete a cached document and its PDF file."""
+        # Get metadata before deletion to find PDF path
+        meta = self.store.get_document_metadata(doc_id)
+        if not meta:
+            logger.warning("Document not found for deletion: %s", doc_id)
+            return f"Document not found: {doc_id}"
+
+        # Delete from database
+        self.store.delete_document(doc_id)
+
+        # Delete PDF file if it exists in our storage
+        pdf_path = Path(meta.file_path)
+        if pdf_path.exists() and self.pdf_storage_dir in pdf_path.parents:
+            pdf_path.unlink()
+            logger.info("Deleted PDF file: %s", pdf_path)
+
+        # Clear active doc if it was the deleted one
+        if self.document_id == doc_id:
+            self.enriched_doc = None
+            self.document_id = None
+            self.text = ""
+
+        logger.info("Deleted cached doc_id=%s", doc_id)
+        return f"Deleted document {doc_id}"

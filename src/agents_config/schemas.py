@@ -35,6 +35,7 @@ class PromptsConfigFile(BaseModel):
     main: str
     reviewer: str
     validator: str
+    ingestion: str
 
 
 class PersonalInfo(BaseModel):

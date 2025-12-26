@@ -6,6 +6,7 @@ from .pdf import (
     parse_pdf,
     parse_pdf_to_document,
 )
+from .pdf_parser import PDFParser
 from .retrieval import search_chunks, search_spans_with_patterns, search_with_patterns
 
 __all__ = [
@@ -18,4 +19,5 @@ __all__ = [
     "search_chunks",
     "search_spans_with_patterns",
     "search_with_patterns",
+    "PDFParser",
 ]
