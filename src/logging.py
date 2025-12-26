@@ -1,11 +1,9 @@
 import logging
 import os
-import sys
 from datetime import datetime
 from pathlib import Path
 
 _configured = False
-_level = None
 
 
 def _get_level() -> int:
@@ -13,40 +11,32 @@ def _get_level() -> int:
     return getattr(logging, level, logging.INFO)
 
 
-def setup_logging(service_name: str) -> logging.Logger:
-    """Setup logging for a service. Logs to console and optionally to file."""
+def configure_logging(*, log_file: str | None = None) -> None:
+    """Configure root logging once per process."""
     global _configured
-    global _level
-
-    logger = logging.getLogger(service_name)
-
-    if _configured and logger.handlers:
-        return logger
-
-    _level = _level or _get_level()
-    logger.setLevel(_level)
-    formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
-
-    # Console handler
-    console = logging.StreamHandler(sys.stdout)
-    console.setLevel(_level)
-    console.setFormatter(formatter)
-    logger.addHandler(console)
-
-    # File handler (optional)
-    log_file = os.getenv("LOG_FILE")
-    if log_file is None and os.getenv("LOG_TO_FILE", "").lower() == "true":
-        Path("logs").mkdir(exist_ok=True)
-        log_file = f"logs/{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
-
-    if log_file:
-        Path(log_file).parent.mkdir(parents=True, exist_ok=True)
-        file_handler = logging.FileHandler(log_file)
-        file_handler.setLevel(_level)
-        file_handler.setFormatter(formatter)
-        logger.addHandler(file_handler)
-        logger.info("Logging to file: %s", log_file)
-
+    if _configured:
+        return
     _configured = True
-    logger.info("Logging configured level=%s", logging.getLevelName(_level))
-    return logger
+
+    root = logging.getLogger()
+    level = _get_level()
+    root.setLevel(level)
+
+    file_path = log_file or os.getenv("LOG_FILE")
+    if file_path is None and os.getenv("LOG_TO_FILE", "true").lower() == "true":
+        Path("logs").mkdir(exist_ok=True)
+        file_path = f"logs/{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+        os.environ.setdefault("LOG_FILE", file_path)
+
+    if file_path:
+        Path(file_path).parent.mkdir(parents=True, exist_ok=True)
+        fh = logging.FileHandler(file_path)
+        fh.setLevel(level)
+        fh.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(name)s - %(message)s"))
+        root.addHandler(fh)
+
+
+def setup_logging(service_name: str) -> logging.Logger:
+    """Get a named logger; config is shared across the whole app."""
+    configure_logging()
+    return logging.getLogger(service_name)

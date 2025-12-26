@@ -3,7 +3,6 @@ import os
 from pathlib import Path
 from typing import Any, Literal, cast
 
-from dotenv import load_dotenv
 from pydantic import BaseModel, Field
 
 from src.logging import setup_logging
@@ -11,16 +10,6 @@ from src.logging import setup_logging
 CONFIG_DIR = Path(__file__).parent
 AGENTS_CONFIG_PATH_ENV = "AGENTS_CONFIG_PATH"
 PROMPTS_CONFIG_PATH_ENV = "PROMPTS_CONFIG_PATH"
-_env_loaded = False
-
-
-def _ensure_env_loaded() -> None:
-    global _env_loaded
-    if _env_loaded:
-        return
-    load_dotenv()
-    setup_logging("config").debug("Loaded .env (if present)")
-    _env_loaded = True
 
 
 class BackendConfig(BaseModel):
@@ -33,6 +22,7 @@ class AgentConfig(BaseModel):
     model: str
     temperature: float = 0.2
     backend: str = "local"
+    max_turns: int | None = 20
 
 
 class AgentsConfigFile(BaseModel):
@@ -44,6 +34,7 @@ class AgentsConfigFile(BaseModel):
 class PromptsConfigFile(BaseModel):
     main: str
     reviewer: str
+    validator: str
 
 
 class PersonalInfo(BaseModel):
@@ -72,7 +63,6 @@ class PersonalInfo(BaseModel):
 
 
 def load_agents_config(path: Path | None = None) -> AgentsConfigFile:
-    _ensure_env_loaded()
     if path is None:
         env_path = os.getenv(AGENTS_CONFIG_PATH_ENV)
         path = Path(env_path) if env_path else (CONFIG_DIR / "agents.json")
@@ -93,7 +83,6 @@ def load_agents_config(path: Path | None = None) -> AgentsConfigFile:
 
 
 def load_prompts_config(path: Path | None = None) -> PromptsConfigFile:
-    _ensure_env_loaded()
     if path is None:
         env_path = os.getenv(PROMPTS_CONFIG_PATH_ENV)
         path = Path(env_path) if env_path else (CONFIG_DIR / "prompts.json")

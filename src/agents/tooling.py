@@ -12,7 +12,6 @@ from src.tools import (
     parse_pdf_to_document,
     search_chunks,
     search_spans_with_patterns,
-    validate_personal_info,
 )
 
 logger = setup_logging("agent_tools")
@@ -56,14 +55,6 @@ def register_reader_tools(agent: Agent) -> None:
             s.text for s in doc.citable_spans if (s.section or "").lower() == section_name.lower()
         ]
         return "\n\n".join(parts)
-
-    @agent.tool
-    async def validate_against_personal_info(ctx, claim: str) -> dict:
-        logger.info("tool=validate_against_personal_info claim=%r", claim[:200])
-        pi: PersonalInfo | None = getattr(ctx.deps, "personal_info", None)
-        if not pi:
-            return {"error": "No personal info available"}
-        return await validate_personal_info(claim, pi)
 
 
 def register_ingestion_tools(agent: Agent) -> None:

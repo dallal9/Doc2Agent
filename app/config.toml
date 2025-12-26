@@ -1,0 +1,5 @@
+[features.spontaneous_file_upload]
+enabled = true
+accept = ["application/pdf"]
+max_files = 1
+max_size_mb = 50

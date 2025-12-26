@@ -6,10 +6,10 @@ def test_get_model_string_ollama_sets_base_url(monkeypatch):
     from src.agents_config import BackendConfig
 
     monkeypatch.delenv("OLLAMA_BASE_URL", raising=False)
-    cfg = BackendConfig(type="ollama", base_url="http://localhost:11434")
+    cfg = BackendConfig(type="ollama", base_url="http://localhost:11434/v1")
     ms = get_model_string(cfg, "gemma2:2b")
     assert ms == "ollama:gemma2:2b"
-    assert os.environ["OLLAMA_BASE_URL"] == "http://localhost:11434"
+    assert os.environ["OLLAMA_BASE_URL"] == "http://localhost:11434/v1"
 
 
 def test_get_model_string_openrouter_sets_openai_env(monkeypatch):
