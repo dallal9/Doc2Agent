@@ -6,14 +6,7 @@ from pydantic_ai import Agent
 
 from src.logging import setup_logging
 from src.schemas import StructuredDocument
-from src.tools import (
-    extract_tables,
-    extract_text_full,
-    get_pdf_metadata,
-    parse_pdf_to_document,
-    search_chunks,
-    search_spans_with_patterns,
-)
+from src.tools import search_chunks, search_spans_with_patterns
 
 if TYPE_CHECKING:
     from src.storage import SQLiteStore
@@ -59,28 +52,6 @@ def register_reader_tools(agent: Agent) -> None:
             s.text for s in doc.citable_spans if (s.section or "").lower() == section_name.lower()
         ]
         return "\n\n".join(parts)
-
-
-def register_ingestion_tools(agent: Agent) -> None:
-    @agent.tool
-    async def parse_pdf(ctx, file_path: str) -> dict:
-        logger.info("tool=parse_pdf file_path=%r", file_path)
-        return parse_pdf_to_document(file_path).model_dump()
-
-    @agent.tool
-    async def read_pdf_text(ctx, file_path: str) -> str:
-        logger.info("tool=read_pdf_text file_path=%r", file_path)
-        return extract_text_full(file_path)
-
-    @agent.tool
-    async def pdf_metadata(ctx, file_path: str) -> dict:
-        logger.info("tool=pdf_metadata file_path=%r", file_path)
-        return get_pdf_metadata(file_path)
-
-    @agent.tool
-    async def pdf_tables(ctx, file_path: str) -> list[dict]:
-        logger.info("tool=pdf_tables file_path=%r", file_path)
-        return [t.model_dump() for t in extract_tables(file_path)]
 
 
 def register_extraction_tools(agent: Agent) -> None:

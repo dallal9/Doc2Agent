@@ -12,7 +12,12 @@ from src.agents_config import load_agents_config, load_personal_info, load_promp
 from src.logging import setup_logging
 from src.schemas import DocumentMetadata, DocumentSchema, StructuredDocument
 from src.storage import SQLiteStore
-from src.tools import PDFParser, extract_text_full, parse_pdf_to_document
+from src.tools import (
+    PDFParser,
+    document_schema_to_structured,
+    extract_text_full,
+    parse_pdf_to_document,
+)
 
 logger = setup_logging("chat_assistant")
 
@@ -187,6 +192,7 @@ class ChatAssistant:
         """Set the active document for chat context."""
         self.enriched_doc = doc
         self.document_id = doc.metadata.doc_id
+        self.document = document_schema_to_structured(doc)
         self.text = "\n\n".join(p.text for p in doc.pages)
 
     def list_cached_documents(self) -> list[DocumentMetadata]:

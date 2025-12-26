@@ -1,40 +1,9 @@
-"""PDF processing tools using pypdf."""
+"""PDF processing tools using PyMuPDF (via PDFParser)."""
 
 from pathlib import Path
 
-from pypdf import PdfReader
-
-from src.schemas import CitableSpan, DocumentPage, StructuredDocument, TableData
-
-
-def parse_pdf(file_path: str | Path) -> list[DocumentPage]:
-    """Parse PDF and extract text per page."""
-    reader = PdfReader(file_path)
-    pages = []
-    for i, page in enumerate(reader.pages):
-        text = page.extract_text() or ""
-        needs_ocr = len(text.strip()) < 50  # likely scanned if very little text
-        pages.append(DocumentPage(page_num=i + 1, text=text, needs_ocr=needs_ocr))
-    return pages
-
-
-def get_pdf_metadata(file_path: str | Path) -> dict:
-    """Extract PDF metadata."""
-    reader = PdfReader(file_path)
-    meta = reader.metadata or {}
-    return {
-        "title": meta.get("/Title", ""),
-        "author": meta.get("/Author", ""),
-        "subject": meta.get("/Subject", ""),
-        "creator": meta.get("/Creator", ""),
-        "pages": len(reader.pages),
-    }
-
-
-def extract_text_full(file_path: str | Path) -> str:
-    """Extract all text from PDF as single string."""
-    reader = PdfReader(file_path)
-    return "\n\n".join(p.extract_text() or "" for p in reader.pages)
+from src.schemas import CitableSpan, DocumentPage, DocumentSchema, StructuredDocument, TableData
+from src.tools.pdf_parser import PDFParser
 
 
 def build_citable_spans(pages: list[DocumentPage]) -> list[CitableSpan]:
@@ -65,14 +34,8 @@ def build_citable_spans(pages: list[DocumentPage]) -> list[CitableSpan]:
     return spans
 
 
-def parse_pdf_to_document(file_path: str | Path) -> StructuredDocument:
-    """Parse PDF into a full StructuredDocument."""
-    pages = parse_pdf(file_path)
-    spans = build_citable_spans(pages)
-    meta = get_pdf_metadata(file_path)
-
-    # Simple section detection (lines ending with colon or all caps)
-    sections = []
+def _infer_sections(pages: list[DocumentPage]) -> list[str]:
+    sections: list[str] = []
     for page in pages:
         for line in page.text.split("\n"):
             line = line.strip()
@@ -80,13 +43,49 @@ def parse_pdf_to_document(file_path: str | Path) -> StructuredDocument:
                 sections.append(line[:-1])
             elif line.isupper() and 3 < len(line) < 50:
                 sections.append(line)
+    # dedupe preserving order
+    seen = set()
+    ordered: list[str] = []
+    for section in sections:
+        if section in seen:
+            continue
+        seen.add(section)
+        ordered.append(section)
+    return ordered
 
+
+def document_schema_to_structured(doc: DocumentSchema) -> StructuredDocument:
+    """Convert parsed DocumentSchema into a StructuredDocument with spans."""
+    pages = [
+        DocumentPage(page_num=p.page_num, text=p.text, needs_ocr=p.word_count < 10, tables=[])
+        for p in doc.pages
+    ]
+    spans = build_citable_spans(pages)
+    sections = _infer_sections(pages)
     return StructuredDocument(
-        pages=pages,
-        sections=list(dict.fromkeys(sections)),  # dedupe preserving order
-        citable_spans=spans,
-        doc_type=meta.get("subject") or None,
+        pages=pages, sections=sections, citable_spans=spans, doc_type=doc.metadata.subject
     )
+
+
+def parse_pdf_to_document(file_path: str | Path) -> StructuredDocument:
+    """Parse PDF into a StructuredDocument using PyMuPDF."""
+    with PDFParser(file_path) as parser:
+        doc = parser.parse_document()
+    return document_schema_to_structured(doc)
+
+
+def get_pdf_metadata(file_path: str | Path) -> dict:
+    """Extract PDF metadata via PDFParser."""
+    with PDFParser(file_path) as parser:
+        meta = parser.extract_metadata()
+    return meta.model_dump()
+
+
+def extract_text_full(file_path: str | Path) -> str:
+    """Extract all text from PDF as single string via PyMuPDF."""
+    with PDFParser(file_path) as parser:
+        doc = parser.parse_document()
+    return "\n\n".join(p.text for p in doc.pages)
 
 
 # Placeholder - requires additional deps like camelot-py
