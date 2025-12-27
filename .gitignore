@@ -211,3 +211,4 @@ __marimo__/
 .DS_Store
 docs/local_*.md
 data/
+.files/

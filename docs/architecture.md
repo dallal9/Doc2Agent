@@ -146,7 +146,7 @@ flowchart LR
 ## Directory Layout
 
 ```
-myagent/
+Doc2Agent/
 ├── app/
 │   └── chainlit_app.py          # Chainlit UI entry point
 ├── src/

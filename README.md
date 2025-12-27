@@ -1,4 +1,4 @@
-# myagent
+# Doc2Agent
 
 PDF assistant with multi-agent architecture for document ingestion and querying.
 

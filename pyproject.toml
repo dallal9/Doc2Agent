@@ -1,5 +1,5 @@
 [project]
-name = "myagent"
+name = "Doc2Agent"
 version = "0.1.0"
 description = "Add your description here"
 requires-python = ">=3.10"
