@@ -1,3 +1,4 @@
+import asyncio
 import os
 
 import chainlit as cl
@@ -15,6 +16,7 @@ logger = setup_logging("chainlit_app")
 SHOW_REASONING = os.getenv("SHOW_REASONING", "true").lower() == "true"
 USE_ENRICHMENT = os.getenv("USE_ENRICHMENT", "true").lower() == "true"
 SHOW_INGESTION_LOGS = os.getenv("SHOW_INGESTION_LOGS", "false").lower() == "true"
+ASSISTANT_AUTHOR = os.getenv("CHAINLIT_ASSISTANT_AUTHOR", "Doc2Agent")
 
 
 async def chat_with_steps(assistant, user_message: str) -> None:
@@ -26,7 +28,7 @@ async def chat_with_steps(assistant, user_message: str) -> None:
         show_reasoning=SHOW_REASONING,
     )
     assistant.finalize_turn(reply)
-    await cl.Message(content=reply).send()
+    await cl.Message(content=reply, author=ASSISTANT_AUTHOR).send()
 
 
 ATTACHMENT_MSG_KEY = "attachment_msg_id"
@@ -38,7 +40,10 @@ async def _show_cached_documents(assistant) -> None:
     """Display cached documents with selection and delete buttons."""
     docs = assistant.list_cached_documents()
     if not docs:
-        await cl.Message(content="📚 No cached documents. Upload a PDF to get started.").send()
+        await cl.Message(
+            content="📚 No cached documents. Upload a PDF to get started.",
+            author=ASSISTANT_AUTHOR,
+        ).send()
         return
 
     actions = []
@@ -82,7 +87,7 @@ async def _show_cached_documents(assistant) -> None:
         f"📚 **Cached Documents** ({len(docs)} total)\n"
         "Select one to load, delete, or upload a new PDF:"
     )
-    await cl.Message(content=content, actions=actions).send()
+    await cl.Message(content=content, actions=actions, author=ASSISTANT_AUTHOR).send()
 
 
 async def _reset_attachment(assistant) -> None:
@@ -123,12 +128,18 @@ async def _upsert_attachment_status_message(load_result: str | None = None) -> N
         msg.id = msg_id
         await msg.update()
     else:
-        msg = await cl.Message(content=content, elements=elements, actions=actions).send()
+        msg = await cl.Message(
+            content=content,
+            elements=elements,
+            actions=actions,
+            author=ASSISTANT_AUTHOR,
+        ).send()
         cl.user_session.set(ATTACHMENT_MSG_KEY, msg.id)
 
 
 @cl.on_chat_start
 async def start():
+    await asyncio.sleep(0.5)
     assistant = ChatAssistant()
     cl.user_session.set("assistant", assistant)
 
@@ -138,7 +149,8 @@ async def start():
 
     await cl.Message(
         content="👋 Hi! Upload a PDF (📎) or select a cached document below.\n"
-        "Use `/docs` to list cached documents, `/clear` to remove attachment."
+        "Use `/docs` to list cached documents, `/clear` to remove attachment.",
+        author=ASSISTANT_AUTHOR,
     ).send()
 
     # Show cached documents on start
@@ -150,7 +162,7 @@ async def start():
 async def on_detach_file(_: cl.Action):
     assistant = cl.user_session.get("assistant")
     await _reset_attachment(assistant)
-    await cl.Message(content="✅ Attachment removed.").send()
+    await cl.Message(content="✅ Attachment removed.", author=ASSISTANT_AUTHOR).send()
 
 
 @cl.action_callback("select_doc")
@@ -171,10 +183,12 @@ async def on_select_doc(action: cl.Action):
         await cl.Message(
             content=f"**Preview of {file_name}:**",
             elements=[cl.Pdf(name=file_name, path=file_path, display="inline")],
+            author=ASSISTANT_AUTHOR,
         ).send()
     else:
         await cl.Message(
-            content=f"✅ {result}\n\n_(Original file not available for preview)_"
+            content=f"✅ {result}\n\n_(Original file not available for preview)_",
+            author=ASSISTANT_AUTHOR,
         ).send()
 
 
@@ -186,7 +200,7 @@ async def on_delete_doc(action: cl.Action):
     file_name = action.payload.get("file_name")
 
     result = assistant.delete_cached_document(doc_id)
-    await cl.Message(content=f"🗑️ {result}").send()
+    await cl.Message(content=f"🗑️ {result}", author=ASSISTANT_AUTHOR).send()
 
     # Clear attachment if deleted doc was active
     if cl.user_session.get(CURRENT_FILE_NAME_KEY) == file_name:
@@ -205,9 +219,15 @@ async def on_flush_cache(action: cl.Action):
 
     count = assistant.store.flush_query_cache(doc_id)
     if doc_id:
-        await cl.Message(content=f"🗑️ Flushed {count} cached queries for {file_name}").send()
+        await cl.Message(
+            content=f"🗑️ Flushed {count} cached queries for {file_name}",
+            author=ASSISTANT_AUTHOR,
+        ).send()
     else:
-        await cl.Message(content=f"🗑️ Flushed {count} cached queries (all documents)").send()
+        await cl.Message(
+            content=f"🗑️ Flushed {count} cached queries (all documents)",
+            author=ASSISTANT_AUTHOR,
+        ).send()
 
     # Refresh the document list
     await _show_cached_documents(assistant)
@@ -220,7 +240,7 @@ async def on_message(message: cl.Message):
 
     if cmd == "/clear":
         await _reset_attachment(assistant)
-        await cl.Message(content="✅ Attachment removed.").send()
+        await cl.Message(content="✅ Attachment removed.", author=ASSISTANT_AUTHOR).send()
         return
 
     if cmd == "/docs":
