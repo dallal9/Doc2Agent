@@ -20,11 +20,25 @@ SHOW_INGESTION_LOGS = os.getenv("SHOW_INGESTION_LOGS", "false").lower() == "true
 async def chat_with_steps(assistant, user_message: str) -> None:
     """Chat with visible reasoning steps in Chainlit UI."""
     prompt, deps = assistant.prepare_turn(user_message)
+    logger.info("chainlit chat_with_steps user_msg_len=%d", len(user_message))
 
     async with cl.Step(name="🤔 Thinking...", type="llm") as step:
         result = await run_agent(assistant.main, prompt, deps=deps, label="main")
         raw_output = result.output or ""
         step_parts = []
+        
+        # Log summary of tool calls
+        tool_calls_list = []
+        for msg in result.all_messages():
+            for p in getattr(msg, "parts", []):
+                if getattr(p, "part_kind", "") == "tool-call" and hasattr(p, "tool_name"):
+                    tool_calls_list.append(p.tool_name)
+        tool_calls_count = len(tool_calls_list)
+        if tool_calls_list:
+            logger.info("chainlit main_agent_complete tool_calls=%d tools=%s output_len=%d", 
+                       tool_calls_count, ", ".join(tool_calls_list), len(raw_output))
+        else:
+            logger.warning("chainlit main_agent_complete no_tool_calls output_len=%d", len(raw_output))
 
         # Extract reasoning traces if present
         think_match = re.search(r"<think>(.*?)</think>", raw_output, re.DOTALL)
@@ -50,25 +64,40 @@ async def chat_with_steps(assistant, user_message: str) -> None:
                     args = getattr(p, "args", None)
                     if args:
                         if isinstance(args, dict):
-                            args_str = ", ".join(args.keys())
+                            # Show key args for better visibility
+                            key_args = []
+                            for k, v in args.items():
+                                if isinstance(v, str):
+                                    key_args.append(f"{k}={v[:30]}..." if len(v) > 30 else f"{k}={v}")
+                                elif isinstance(v, list):
+                                    key_args.append(f"{k}=[{len(v)} items]")
+                                else:
+                                    key_args.append(f"{k}={v}")
+                            args_str = ", ".join(key_args)
                         elif isinstance(args, str):
-                            args_str = "..."
+                            args_str = f"... ({len(args)} chars)"
                     tid = getattr(p, "tool_call_id", id(p))
-                    tool_info[tid] = {"name": p.tool_name, "args": args_str, "result": None}
+                    tool_info[tid] = {"name": p.tool_name, "args": args_str, "result": None, "called": True}
+                    logger.debug("chainlit tool_call detected: %s(%s)", p.tool_name, args_str)
                 elif part_kind == "tool-return" and hasattr(p, "content"):
                     tid = getattr(p, "tool_call_id", None)
                     if tid and tid in tool_info:
-                        content = str(p.content)[:150]
-                        tool_info[tid]["result"] = content
+                        content = str(p.content)
+                        tool_info[tid]["result"] = content[:200] + "..." if len(content) > 200 else content
+                        logger.debug("chainlit tool_return for %s: %d chars", tool_info[tid]["name"], len(content))
 
         # Format tool calls for display
         for info in tool_info.values():
             agent = TOOL_AGENTS.get(info["name"], "")
-            agent_label = f" → {agent}" if agent else ""
+            agent_label = f" → **{agent} agent**" if agent else ""
             line = f"🔧 **{info['name']}**({info['args']}){agent_label}"
             if info["result"]:
-                line += f"\n   ↳ {info['result']}..."
+                result_preview = info["result"][:150] + "..." if len(info["result"]) > 150 else info["result"]
+                line += f"\n   ↳ {result_preview}"
             step_parts.append(line)
+        
+        if not tool_info and tool_calls_count == 0:
+            logger.warning("chainlit no tool calls detected - agent may have answered directly without using tools")
 
         if step_parts:
             step.output = "\n\n".join(step_parts)
@@ -264,7 +293,10 @@ async def on_message(message: cl.Message):
                     await step.update()
 
             result = await assistant.ingest_pdf(
-                element.path, enrich=USE_ENRICHMENT, on_progress=on_progress
+                element.path,
+                enrich=USE_ENRICHMENT,
+                on_progress=on_progress,
+                original_filename=element.name,
             )
             step.output = result
 

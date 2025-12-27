@@ -47,7 +47,8 @@ uv run chainlit run app/chainlit_app.py
 - **Personal info**: `PERSONAL_INFO_JSON='{"name":"...","email":"..."}'`
 - **PDF ingestion**:
   - `PDF_JSON_MAX_BYTES=2000000` - max file size for JSON storage
-  - `PDF_SQLITE_PATH=pdf_data.db` - SQLite database path
+  - `PDF_SQLITE_DIR=data` - Directory for SQLite database files
+  - `PDF_STORAGE_DIR=data/pdfs` - Directory for permanent PDF file storage
 - **Inline context**: `INLINE_DOC_MAX_CHARS=20000`
 - **Reasoning traces**: `SHOW_REASONING=true` - displays `<think>` tags
 - **Logging**: `LOG_LEVEL`, `LOG_FILE`, `LOG_TO_FILE`

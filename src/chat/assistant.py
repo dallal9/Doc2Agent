@@ -114,7 +114,11 @@ class ChatAssistant:
         return f"Loaded {len(self.document.pages)} pages, {len(self.document.citable_spans)} spans"
 
     async def ingest_pdf(
-        self, file_path: str, enrich: bool = True, on_progress: ProgressCallback | None = None
+        self,
+        file_path: str,
+        enrich: bool = True,
+        on_progress: ProgressCallback | None = None,
+        original_filename: str | None = None,
     ) -> str:
         """Ingest PDF with cache-first logic, PyMuPDF parser, and optional LLM enrichment."""
         p = Path(file_path)
@@ -139,6 +143,10 @@ class ChatAssistant:
         logger.info("Ingesting PDF: %s enrich=%s", file_path, enrich)
         with PDFParser(file_path) as parser:
             doc = parser.parse_document()
+
+        # Use original filename if provided (from upload), otherwise use path name
+        if original_filename:
+            doc.metadata.file_name = original_filename
 
         # Add cache invalidation fields to metadata
         file_hash = hashlib.md5(p.read_bytes()).hexdigest()
