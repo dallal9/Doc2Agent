@@ -39,8 +39,9 @@ def get_model_string(backend_cfg: BackendConfig, model_name: str) -> str:
 async def run_agent(agent: Agent, prompt: str, *, deps: Any = None, label: str = "") -> Any:
     """Run agent with timing and usage logging."""
     t0 = time.time()
-    logger.info("agent=%s start prompt_chars=%d", label or "agent", len(prompt))
-    logger.debug("agent=%s prompt=%s", label, prompt[:500])
+    agent_label = label or "agent"
+    logger.info("agent=%s start prompt_chars=%d", agent_label, len(prompt))
+    logger.debug("agent=%s prompt=%s", agent_label, prompt[:500])
 
     usage_limits = getattr(agent, "_usage_limits", None)
     try:
@@ -59,19 +60,31 @@ async def run_agent(agent: Agent, prompt: str, *, deps: Any = None, label: str =
 
     dt = time.time() - t0
     usage = result.usage()
-    output = result.output or ""
+    output = result.output
     tps = usage.output_tokens / dt if dt > 0 else 0
+    out_chars = len(output) if isinstance(output, str) else 0
 
+    agent_label = label or "agent"
     logger.info(
         "agent=%s done time=%.2fs in_tok=%d out_tok=%d tps=%.1f out_chars=%d",
-        label or "agent",
+        agent_label,
         dt,
         usage.input_tokens,
         usage.output_tokens,
         tps,
-        len(output),
+        out_chars,
     )
-    logger.debug("agent=%s output=%s", label, output[:500] if isinstance(output, str) else output)
+    logger.debug(
+        "agent=%s output=%s", agent_label, output[:500] if isinstance(output, str) else output
+    )
+
+    # Log if this is a nested agent call (reviewer/validator)
+    if agent_label in ("reviewer", "validator"):
+        logger.info(
+            "agent=%s nested_call_complete output_preview=%r",
+            agent_label,
+            (output[:100] if isinstance(output, str) else str(output)[:100]),
+        )
     return result
 
 

@@ -19,11 +19,9 @@ dependencies = [
     "isort>=5.13.0",
     "openai>=1.0.0",
     "pypdf>=4.0.0",
+    "pymupdf>=1.24.0",
     "chainlit>=1.0.0",
 ]
-
-[project.scripts]
-pdf-assistant = "app.cli:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

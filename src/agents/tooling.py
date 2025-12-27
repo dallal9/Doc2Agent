@@ -1,18 +1,15 @@
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from pydantic_ai import Agent
 
-from src.agents_config import PersonalInfo
 from src.logging import setup_logging
 from src.schemas import StructuredDocument
-from src.tools import (
-    extract_tables,
-    extract_text_full,
-    get_pdf_metadata,
-    parse_pdf_to_document,
-    search_chunks,
-    search_spans_with_patterns,
-)
+from src.tools import search_chunks, search_spans_with_patterns
+
+if TYPE_CHECKING:
+    from src.storage import SQLiteStore
 
 logger = setup_logging("agent_tools")
 
@@ -57,28 +54,6 @@ def register_reader_tools(agent: Agent) -> None:
         return "\n\n".join(parts)
 
 
-def register_ingestion_tools(agent: Agent) -> None:
-    @agent.tool
-    async def parse_pdf(ctx, file_path: str) -> dict:
-        logger.info("tool=parse_pdf file_path=%r", file_path)
-        return parse_pdf_to_document(file_path).model_dump()
-
-    @agent.tool
-    async def read_pdf_text(ctx, file_path: str) -> str:
-        logger.info("tool=read_pdf_text file_path=%r", file_path)
-        return extract_text_full(file_path)
-
-    @agent.tool
-    async def pdf_metadata(ctx, file_path: str) -> dict:
-        logger.info("tool=pdf_metadata file_path=%r", file_path)
-        return get_pdf_metadata(file_path)
-
-    @agent.tool
-    async def pdf_tables(ctx, file_path: str) -> list[dict]:
-        logger.info("tool=pdf_tables file_path=%r", file_path)
-        return [t.model_dump() for t in extract_tables(file_path)]
-
-
 def register_extraction_tools(agent: Agent) -> None:
     @agent.tool
     async def find_matches_in_document(
@@ -97,3 +72,61 @@ def register_extraction_tools(agent: Agent) -> None:
             patterns,
             max_results=max_results,
         )
+
+
+def register_database_tools(agent: Agent) -> None:
+    """Register SQLite query tools for the main agent."""
+
+    @agent.tool
+    async def query_pages(
+        ctx,
+        contains_names: bool | None = None,
+        contains_personal: bool | None = None,
+        has_images: bool | None = None,
+        language: str | None = None,
+        limit: int = 10,
+    ) -> list[dict]:
+        """Query pages from SQLite with optional filters."""
+        logger.info(
+            "tool=query_pages names=%s personal=%s images=%s lang=%s limit=%s",
+            contains_names,
+            contains_personal,
+            has_images,
+            language,
+            limit,
+        )
+        store: "SQLiteStore | None" = getattr(ctx.deps, "store", None)
+        doc_id: str | None = getattr(ctx.deps, "document_id", None)
+        if not store or not doc_id:
+            return []
+        return [
+            p.model_dump()
+            for p in store.query_pages(
+                doc_id,
+                contains_names=contains_names,
+                contains_personal=contains_personal,
+                has_images=has_images,
+                language=language,
+                limit=limit,
+            )
+        ]
+
+    @agent.tool
+    async def get_all_pages(ctx) -> list[dict]:
+        """Get all pages for the current document."""
+        logger.info("tool=get_all_pages")
+        store: "SQLiteStore | None" = getattr(ctx.deps, "store", None)
+        doc_id: str | None = getattr(ctx.deps, "document_id", None)
+        if not store or not doc_id:
+            return []
+        return [p.model_dump() for p in store.get_all_pages(doc_id)]
+
+    @agent.tool
+    async def search_pages_fts(ctx, query: str, limit: int = 10) -> list[dict]:
+        """Full-text search across pages."""
+        logger.info("tool=search_pages_fts query=%r limit=%s", query, limit)
+        store: "SQLiteStore | None" = getattr(ctx.deps, "store", None)
+        doc_id: str | None = getattr(ctx.deps, "document_id", None)
+        if not store or not doc_id:
+            return []
+        return [p.model_dump() for p in store.search_text(doc_id, query, limit)]
