@@ -1,6 +1,6 @@
 # <img src="logo.svg" alt="Doc2Agent" width="600" height="160">
 
-<img src="docs/preview.gif" alt="Doc2Agent Preview" width="800">
+<img src="docs/chat-preview.gif" alt="Doc2Agent Preview" width="800">
 
 ![Python](https://img.shields.io/badge/python-3.10+-blue.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
