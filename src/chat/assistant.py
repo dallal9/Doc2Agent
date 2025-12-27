@@ -6,7 +6,7 @@ import shutil
 from pathlib import Path
 from typing import Callable
 
-from src.agents import create_ingestion_agent, create_main_agent, ingest_page, run_agent
+from src.agents import create_ingestion_agent, create_main_agent, ingest_page
 from src.agents.main import MainDeps
 from src.agents_config import load_agents_config, load_personal_info, load_prompts_config
 from src.logging import setup_logging
@@ -48,6 +48,24 @@ class ChatAssistant:
         self.pdf_storage_dir.mkdir(parents=True, exist_ok=True)
         # Initialize SQLite store eagerly for unified caching
         self.store = SQLiteStore(str(self.pdf_sqlite_path))
+        # Query cache settings
+        self.query_cache_enabled = os.getenv("QUERY_CACHE_ENABLED", "true").lower() == "true"
+        self.query_cache_max_per_file = int(os.getenv("QUERY_CACHE_MAX_PER_FILE", "10"))
+
+    def set_text(self, text: str) -> None:
+        """Set raw document text for prompt context (used by unit tests)."""
+        self.text = text or ""
+
+    async def chat(self, user_message: str) -> str:
+        """Run one chat turn against the main agent."""
+        prompt, deps = self.prepare_turn(user_message)
+        result = await self.main.run(prompt, deps=deps)
+        reply = result.output if hasattr(result, "output") else result
+        return self.finalize_turn(reply)
+
+    def _normalize_query(self, query: str) -> str:
+        """Normalize query for cache matching: trim whitespace and lowercase."""
+        return query.strip().lower()
 
     def prepare_turn(self, user_message: str) -> tuple[str, MainDeps]:
         """Prepare prompt + deps for a chat turn."""
@@ -79,7 +97,10 @@ class ChatAssistant:
             doc_block = f"Document text (truncated):\n{self.text[:self.inline_doc_max_chars]}\n\n"
             logger.info("turn=%d inline_doc=false use_tools=true", len(self.history) // 2)
 
-        prompt = f"{pi_block}{doc_block}Conversation so far:\n{history_text}\n\nUser message: {user_message}"
+        prompt = (
+            f"{pi_block}{doc_block}Conversation so far:\n{history_text}\n\n"
+            f"User message: {user_message}"
+        )
         deps = MainDeps(
             document=self.document,
             text=self.text,
@@ -202,6 +223,28 @@ class ChatAssistant:
         self.document_id = doc.metadata.doc_id
         self.document = document_schema_to_structured(doc)
         self.text = "\n\n".join(p.text for p in doc.pages)
+
+    def get_cached_query(self, user_message: str) -> dict | None:
+        """Check if query is cached. Returns cached data or None."""
+        if not self.query_cache_enabled or not self.document_id:
+            return None
+        normalized = self._normalize_query(user_message)
+        return self.store.get_cached_query(self.document_id, normalized)
+
+    def save_query_cache(self, user_message: str, output: str, traces: list, logs: dict) -> None:
+        """Save query result to cache."""
+        if not self.query_cache_enabled or not self.document_id:
+            return
+        normalized = self._normalize_query(user_message)
+        self.store.save_query_cache(
+            self.document_id,
+            normalized,
+            user_message,
+            output,
+            traces,
+            logs,
+            self.query_cache_max_per_file,
+        )
 
     def list_cached_documents(self) -> list[DocumentMetadata]:
         """List all cached documents from SQLite."""

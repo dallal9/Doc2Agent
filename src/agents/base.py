@@ -74,11 +74,17 @@ async def run_agent(agent: Agent, prompt: str, *, deps: Any = None, label: str =
         tps,
         out_chars,
     )
-    logger.debug("agent=%s output=%s", agent_label, output[:500] if isinstance(output, str) else output)
-    
+    logger.debug(
+        "agent=%s output=%s", agent_label, output[:500] if isinstance(output, str) else output
+    )
+
     # Log if this is a nested agent call (reviewer/validator)
     if agent_label in ("reviewer", "validator"):
-        logger.info("agent=%s nested_call_complete output_preview=%r", agent_label, (output[:100] if isinstance(output, str) else str(output)[:100]))
+        logger.info(
+            "agent=%s nested_call_complete output_preview=%r",
+            agent_label,
+            (output[:100] if isinstance(output, str) else str(output)[:100]),
+        )
     return result
 
 

@@ -52,6 +52,11 @@ uv run chainlit run app/chainlit_app.py
 - **Inline context**: `INLINE_DOC_MAX_CHARS=20000`
 - **Reasoning traces**: `SHOW_REASONING=true` - displays `<think>` tags
 - **Logging**: `LOG_LEVEL`, `LOG_FILE`, `LOG_TO_FILE`
+- **Query caching**:
+  - `QUERY_CACHE_ENABLED=true` - Enable/disable query caching (default: true)
+  - `QUERY_CACHE_MAX_PER_FILE=10` - Max cached queries per document (default: 10)
+  - Cached queries are automatically deleted when documents are removed
+  - Use "Flush Cache" button in UI to clear cached queries
 
 ## Development
 

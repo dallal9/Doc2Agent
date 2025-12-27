@@ -76,7 +76,9 @@ def create_main_agent(
 
     @agent.tool
     async def review_draft(_ctx, user_message: str, draft: str) -> str:
-        logger.info("tool=review_draft invoked user_msg_len=%d draft_len=%d", len(user_message), len(draft))
+        logger.info(
+            "tool=review_draft invoked user_msg_len=%d draft_len=%d", len(user_message), len(draft)
+        )
         prompt = _build_review_prompt(user_message, draft)
         logger.info("tool=review_draft calling reviewer agent")
         result = await run_agent(reviewer, prompt, label="reviewer")
@@ -87,7 +89,11 @@ def create_main_agent(
     @agent.tool
     async def validate_against_personal_info(ctx, claim: str) -> str:
         """Compare a claim from the document with the user's personal info."""
-        logger.info("tool=validate_against_personal_info invoked claim_len=%d claim_preview=%r", len(claim), claim[:200])
+        logger.info(
+            "tool=validate_against_personal_info invoked claim_len=%d claim_preview=%r",
+            len(claim),
+            claim[:200],
+        )
         pi: PersonalInfo | None = getattr(ctx.deps, "personal_info", None)
         if not pi:
             logger.warning("tool=validate_against_personal_info no personal_info available")

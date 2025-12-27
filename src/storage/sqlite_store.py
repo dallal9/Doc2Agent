@@ -2,6 +2,7 @@
 
 import json
 import sqlite3
+import uuid
 from typing import Iterator
 
 from src.schemas import DocumentMetadata, DocumentSchema, Heading, PageSchema
@@ -58,6 +59,20 @@ CREATE TRIGGER IF NOT EXISTS pages_ad AFTER DELETE ON pages BEGIN
     INSERT INTO pages_fts(pages_fts, rowid, doc_id, page_num, text)
     VALUES('delete', old.rowid, old.doc_id, old.page_num, old.text);
 END;
+
+CREATE TABLE IF NOT EXISTS query_cache (
+    query_id TEXT PRIMARY KEY,
+    doc_id TEXT NOT NULL,
+    query_text TEXT NOT NULL,
+    query_text_original TEXT,
+    final_output TEXT NOT NULL,
+    traces_json TEXT,
+    logs_json TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (doc_id) REFERENCES documents(doc_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_query_cache_doc_query ON query_cache(doc_id, query_text);
 """
 
 
@@ -82,6 +97,30 @@ class SQLiteStore:
             self.conn.execute("ALTER TABLE documents ADD COLUMN file_mod_time REAL")
         if "file_hash" not in columns:
             self.conn.execute("ALTER TABLE documents ADD COLUMN file_hash TEXT")
+
+        # Create query_cache table if it doesn't exist
+        cur = self.conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='query_cache'"
+        )
+        if not cur.fetchone():
+            self.conn.execute(
+                """
+                CREATE TABLE query_cache (
+                    query_id TEXT PRIMARY KEY,
+                    doc_id TEXT NOT NULL,
+                    query_text TEXT NOT NULL,
+                    query_text_original TEXT,
+                    final_output TEXT NOT NULL,
+                    traces_json TEXT,
+                    logs_json TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (doc_id) REFERENCES documents(doc_id) ON DELETE CASCADE
+                )
+            """
+            )
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_query_cache_doc_query ON query_cache(doc_id, query_text)"
+            )
 
     def insert_document(self, doc: DocumentSchema):
         cur = self.conn.cursor()
@@ -233,10 +272,92 @@ class SQLiteStore:
 
     def delete_document(self, doc_id: str) -> bool:
         """Delete a document and its pages from cache."""
+        self.delete_queries_for_document(doc_id)
         self.conn.execute("DELETE FROM pages WHERE doc_id = ?", (doc_id,))
         result = self.conn.execute("DELETE FROM documents WHERE doc_id = ?", (doc_id,))
         self.conn.commit()
         return result.rowcount > 0
+
+    def get_cached_query(self, doc_id: str, query_text: str) -> dict | None:
+        """Get cached query result. Query text should be normalized."""
+        row = self.conn.execute(
+            "SELECT * FROM query_cache WHERE doc_id = ? AND query_text = ? ORDER BY created_at DESC LIMIT 1",
+            (doc_id, query_text),
+        ).fetchone()
+        if not row:
+            return None
+        return {
+            "query_id": row["query_id"],
+            "doc_id": row["doc_id"],
+            "query_text": row["query_text"],
+            "query_text_original": row["query_text_original"],
+            "final_output": row["final_output"],
+            "traces_json": row["traces_json"],
+            "logs_json": row["logs_json"],
+            "created_at": row["created_at"],
+        }
+
+    def save_query_cache(
+        self,
+        doc_id: str,
+        query_text: str,
+        query_text_original: str,
+        output: str,
+        traces: list,
+        logs: dict,
+        max_per_file: int,
+    ) -> None:
+        """Save query cache entry and enforce max_per_file limit."""
+        query_id = str(uuid.uuid4())
+        traces_json = json.dumps(traces) if traces else None
+        logs_json = json.dumps(logs) if logs else None
+
+        self.conn.execute(
+            """INSERT INTO query_cache
+               (query_id, doc_id, query_text, query_text_original, final_output, traces_json, logs_json)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (query_id, doc_id, query_text, query_text_original, output, traces_json, logs_json),
+        )
+
+        # Enforce max_per_file limit
+        count = self.conn.execute(
+            "SELECT COUNT(*) FROM query_cache WHERE doc_id = ?", (doc_id,)
+        ).fetchone()[0]
+        if count > max_per_file:
+            excess = count - max_per_file
+            self.conn.execute(
+                """DELETE FROM query_cache
+                   WHERE doc_id = ? AND query_id IN (
+                       SELECT query_id FROM query_cache
+                       WHERE doc_id = ?
+                       ORDER BY created_at ASC
+                       LIMIT ?
+                   )""",
+                (doc_id, doc_id, excess),
+            )
+
+        self.conn.commit()
+
+    def flush_query_cache(self, doc_id: str | None = None) -> int:
+        """Delete all cached queries or queries for a specific document."""
+        if doc_id:
+            result = self.conn.execute("DELETE FROM query_cache WHERE doc_id = ?", (doc_id,))
+        else:
+            result = self.conn.execute("DELETE FROM query_cache")
+        self.conn.commit()
+        return result.rowcount
+
+    def delete_queries_for_document(self, doc_id: str) -> None:
+        """Delete all queries for a document."""
+        self.conn.execute("DELETE FROM query_cache WHERE doc_id = ?", (doc_id,))
+        self.conn.commit()
+
+    def get_query_count_for_document(self, doc_id: str) -> int:
+        """Get count of cached queries for a document."""
+        row = self.conn.execute(
+            "SELECT COUNT(*) FROM query_cache WHERE doc_id = ?", (doc_id,)
+        ).fetchone()
+        return row[0] if row else 0
 
     def close(self):
         self.conn.close()
