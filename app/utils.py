@@ -1,18 +1,28 @@
-"""Utilities for Chainlit query caching + rendering."""
+"""Utilities for query caching + rendering (framework-agnostic)."""
 
 from __future__ import annotations
 
 import json
 import re
+from dataclasses import dataclass, field
 from typing import Any, Callable
-
-import chainlit as cl
 
 from src.logging import setup_logging
 
 logger = setup_logging("cache_utils")
 
 RunAgentFn = Callable[..., Any]
+
+
+@dataclass
+class ChatResult:
+    """Structured result from a chat turn, decoupled from any UI framework."""
+
+    reply: str
+    reasoning: str | None = None
+    tool_lines: list[str] = field(default_factory=list)
+    is_cached: bool = False
+    usage_summary: str | None = None
 
 
 def _extract_tool_calls_list(result: Any) -> list[str]:
@@ -62,11 +72,11 @@ def _extract_tool_lines_from_result(result: Any) -> list[str]:
     lines: list[str] = []
     for info in tool_info.values():
         agent = TOOL_AGENTS.get(info["name"], "")
-        agent_label = f" → **{agent} agent**" if agent else ""
-        line = f"🔧 **{info['name']}**({info['args']}){agent_label}"
+        agent_label = f" -> **{agent} agent**" if agent else ""
+        line = f"**{info['name']}**({info['args']}){agent_label}"
         if info.get("result"):
             r = str(info["result"])
-            line += f"\n   ↳ {r[:150] + '...' if len(r) > 150 else r}"
+            line += f"\n   > {r[:150] + '...' if len(r) > 150 else r}"
         lines.append(line)
     return lines
 
@@ -142,11 +152,11 @@ def format_tool_info_from_cache(traces_json: str | None) -> list[str]:
         step_parts: list[str] = []
         for info in tool_info.values():
             agent = TOOL_AGENTS.get(info["name"], "")
-            agent_label = f" → **{agent} agent**" if agent else ""
-            line = f"🔧 **{info['name']}**({info['args']}){agent_label}"
+            agent_label = f" -> **{agent} agent**" if agent else ""
+            line = f"**{info['name']}**({info['args']}){agent_label}"
             if info["result"]:
                 r = str(info["result"])
-                line += f"\n   ↳ {r[:150] + '...' if len(r) > 150 else r}"
+                line += f"\n   > {r[:150] + '...' if len(r) > 150 else r}"
             step_parts.append(line)
         return step_parts
     except (json.JSONDecodeError, KeyError, TypeError) as e:
@@ -160,57 +170,58 @@ async def render_chat_with_cache(
     user_message: str,
     run_agent: RunAgentFn,
     show_reasoning: bool,
-) -> str:
+) -> ChatResult:
+    """Run a chat turn with query cache. Returns structured ChatResult."""
     cached = assistant.get_cached_query(user_message)
     if cached is not None:
         raw_output = cached["final_output"]
         reply, reasoning = _strip_think(raw_output, show_reasoning=show_reasoning)
-        step_parts = ["📦 **Cached Result**"]
-        if reasoning:
-            step_parts.append(reasoning)
-        step_parts.extend(format_tool_info_from_cache(cached.get("traces_json")))
-        async with cl.Step(name="🤔 Thinking...", type="llm") as step:
-            step.output = "\n\n".join(step_parts) if step_parts else "📦 **Cached Result**"
-        return reply
+        tool_lines = format_tool_info_from_cache(cached.get("traces_json"))
+        return ChatResult(
+            reply=reply,
+            reasoning=reasoning,
+            tool_lines=tool_lines,
+            is_cached=True,
+        )
 
     prompt, deps = assistant.prepare_turn(user_message)
-    async with cl.Step(name="🤔 Thinking...", type="llm") as step:
-        result = await run_agent(assistant.main, prompt, deps=deps, label="main")
-        raw_output = result.output or ""
+    result = await run_agent(assistant.main, prompt, deps=deps, label="main")
+    raw_output = result.output or ""
 
-        tool_calls_list = _extract_tool_calls_list(result)
-        if tool_calls_list:
-            logger.info(
-                "chainlit main_agent_complete tool_calls=%d tools=%s output_len=%d",
-                len(tool_calls_list),
-                ", ".join(tool_calls_list),
-                len(raw_output),
-            )
-        else:
-            logger.warning(
-                "chainlit main_agent_complete no_tool_calls output_len=%d",
-                len(raw_output),
-            )
+    tool_calls_list = _extract_tool_calls_list(result)
+    if tool_calls_list:
+        logger.info(
+            "main_agent_complete tool_calls=%d tools=%s output_len=%d",
+            len(tool_calls_list),
+            ", ".join(tool_calls_list),
+            len(raw_output),
+        )
+    else:
+        logger.warning(
+            "main_agent_complete no_tool_calls output_len=%d",
+            len(raw_output),
+        )
 
-        reply, reasoning = _strip_think(raw_output, show_reasoning=show_reasoning)
-        step_parts: list[str] = []
-        if reasoning:
-            step_parts.append(reasoning)
-        step_parts.extend(_extract_tool_lines_from_result(result))
-        if step_parts:
-            step.output = "\n\n".join(step_parts)
-        else:
-            usage = result.usage()
-            step.output = f"📝 Direct answer ({usage.output_tokens} tokens)"
+    reply, reasoning = _strip_think(raw_output, show_reasoning=show_reasoning)
+    tool_lines = _extract_tool_lines_from_result(result)
 
-        traces = serialize_messages(result.all_messages())
-        usage = result.usage()
-        logs = {
-            "tool_calls": tool_calls_list,
-            "usage": {
-                "input_tokens": usage.input_tokens,
-                "output_tokens": usage.output_tokens,
-            },
-        }
-        assistant.save_query_cache(user_message, raw_output, traces, logs)
-        return reply
+    usage = result.usage()
+    usage_summary = f"Direct answer ({usage.output_tokens} tokens)" if not tool_lines else None
+
+    traces = serialize_messages(result.all_messages())
+    logs = {
+        "tool_calls": tool_calls_list,
+        "usage": {
+            "input_tokens": usage.input_tokens,
+            "output_tokens": usage.output_tokens,
+        },
+    }
+    assistant.save_query_cache(user_message, raw_output, traces, logs)
+
+    return ChatResult(
+        reply=reply,
+        reasoning=reasoning,
+        tool_lines=tool_lines,
+        is_cached=False,
+        usage_summary=usage_summary,
+    )

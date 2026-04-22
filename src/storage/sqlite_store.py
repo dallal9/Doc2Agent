@@ -3,6 +3,7 @@
 import json
 import sqlite3
 import uuid
+from datetime import datetime
 from typing import Iterator
 
 from src.schemas import DocumentMetadata, DocumentSchema, Heading, PageSchema
@@ -73,6 +74,29 @@ CREATE TABLE IF NOT EXISTS query_cache (
 );
 
 CREATE INDEX IF NOT EXISTS idx_query_cache_doc_query ON query_cache(doc_id, query_text);
+
+CREATE TABLE IF NOT EXISTS chat_sessions (
+    session_id TEXT PRIMARY KEY,
+    doc_id TEXT,
+    title TEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (doc_id) REFERENCES documents(doc_id) ON DELETE SET NULL
+);
+
+CREATE TABLE IF NOT EXISTS chat_messages (
+    message_id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    role TEXT NOT NULL,
+    content TEXT NOT NULL,
+    seq INTEGER NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (session_id) REFERENCES chat_sessions(session_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_chat_sessions_updated_at ON chat_sessions(updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_chat_sessions_doc_id ON chat_sessions(doc_id, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_chat_messages_session_seq ON chat_messages(session_id, seq);
 """
 
 
@@ -81,6 +105,7 @@ class SQLiteStore:
         self.db_path = db_path
         self.conn = sqlite3.connect(db_path)
         self.conn.row_factory = sqlite3.Row
+        self.conn.execute("PRAGMA foreign_keys=ON")
         self.conn.execute("PRAGMA journal_mode=WAL")
         self._init_schema()
 
@@ -120,6 +145,52 @@ class SQLiteStore:
             )
             self.conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_query_cache_doc_query ON query_cache(doc_id, query_text)"
+            )
+
+        # Create chat_sessions table if it doesn't exist
+        cur = self.conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='chat_sessions'"
+        )
+        if not cur.fetchone():
+            self.conn.execute(
+                """
+                CREATE TABLE chat_sessions (
+                    session_id TEXT PRIMARY KEY,
+                    doc_id TEXT,
+                    title TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (doc_id) REFERENCES documents(doc_id) ON DELETE SET NULL
+                )
+            """
+            )
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_chat_sessions_updated_at ON chat_sessions(updated_at DESC)"
+            )
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_chat_sessions_doc_id ON chat_sessions(doc_id, updated_at DESC)"
+            )
+
+        # Create chat_messages table if it doesn't exist
+        cur = self.conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='chat_messages'"
+        )
+        if not cur.fetchone():
+            self.conn.execute(
+                """
+                CREATE TABLE chat_messages (
+                    message_id TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL,
+                    role TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    seq INTEGER NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (session_id) REFERENCES chat_sessions(session_id) ON DELETE CASCADE
+                )
+            """
+            )
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_chat_messages_session_seq ON chat_messages(session_id, seq)"
             )
 
     def insert_document(self, doc: DocumentSchema):
@@ -358,6 +429,96 @@ class SQLiteStore:
             "SELECT COUNT(*) FROM query_cache WHERE doc_id = ?", (doc_id,)
         ).fetchone()
         return row[0] if row else 0
+
+    def create_chat_session(self, *, title: str, doc_id: str | None = None) -> str:
+        session_id = str(uuid.uuid4())
+        self.conn.execute(
+            """
+            INSERT INTO chat_sessions (session_id, doc_id, title, updated_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            (session_id, doc_id, title, datetime.utcnow().isoformat()),
+        )
+        self.conn.commit()
+        return session_id
+
+    def get_chat_session(self, session_id: str) -> dict | None:
+        row = self.conn.execute(
+            "SELECT session_id, doc_id, title, created_at, updated_at FROM chat_sessions WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        if not row:
+            return None
+        return dict(row)
+
+    def list_chat_sessions(self, *, limit: int = 30) -> list[dict]:
+        rows = self.conn.execute(
+            """
+            SELECT s.session_id, s.doc_id, s.title, s.created_at, s.updated_at,
+                   COUNT(m.message_id) AS message_count
+            FROM chat_sessions s
+            LEFT JOIN chat_messages m ON m.session_id = s.session_id
+            GROUP BY s.session_id
+            ORDER BY s.updated_at DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def save_chat_message(self, *, session_id: str, role: str, content: str) -> str:
+        message_id = str(uuid.uuid4())
+        row = self.conn.execute(
+            "SELECT COALESCE(MAX(seq), -1) + 1 AS next_seq FROM chat_messages WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        next_seq = row["next_seq"] if row else 0
+        self.conn.execute(
+            """
+            INSERT INTO chat_messages (message_id, session_id, role, content, seq)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (message_id, session_id, role, content, next_seq),
+        )
+        self.conn.execute(
+            "UPDATE chat_sessions SET updated_at = ? WHERE session_id = ?",
+            (datetime.utcnow().isoformat(), session_id),
+        )
+        self.conn.commit()
+        return message_id
+
+    def update_chat_session_doc(self, session_id: str, doc_id: str | None) -> None:
+        self.conn.execute(
+            "UPDATE chat_sessions SET doc_id = ?, updated_at = ? WHERE session_id = ?",
+            (doc_id, datetime.utcnow().isoformat(), session_id),
+        )
+        self.conn.commit()
+
+    def get_chat_messages(self, session_id: str) -> list[dict]:
+        rows = self.conn.execute(
+            """
+            SELECT message_id, session_id, role, content, seq, created_at
+            FROM chat_messages
+            WHERE session_id = ?
+            ORDER BY seq ASC
+            """,
+            (session_id,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def clear_chat_messages(self, session_id: str) -> int:
+        result = self.conn.execute("DELETE FROM chat_messages WHERE session_id = ?", (session_id,))
+        self.conn.execute(
+            "UPDATE chat_sessions SET updated_at = ? WHERE session_id = ?",
+            (datetime.utcnow().isoformat(), session_id),
+        )
+        self.conn.commit()
+        return result.rowcount
+
+    def clear_all_chat_sessions(self) -> int:
+        result = self.conn.execute("DELETE FROM chat_sessions")
+        self.conn.commit()
+        return result.rowcount
 
     def close(self):
         self.conn.close()

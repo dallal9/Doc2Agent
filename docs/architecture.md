@@ -1,6 +1,6 @@
 # Architecture
 
-> **Goal**: Personal local document Q&A agent — Chainlit UI → Multi-agent system → Ollama LLM, with PDF ingestion, SQLite storage, and semantic page querying.
+> **Goal**: Personal local document Q&A agent — Gradio UI → Multi-agent system → Ollama LLM, with PDF ingestion, SQLite storage, and semantic page querying.
 
 ---
 
@@ -9,7 +9,7 @@
 ```mermaid
 flowchart TB
     subgraph UI [User Interface]
-        CL[Chainlit Web UI]
+        GR[Gradio Web UI]
     end
 
     subgraph Ingestion [PDF Ingestion Pipeline]
@@ -36,14 +36,14 @@ flowchart TB
         Ollama[Ollama<br/>Local Inference]
     end
 
-    CL -->|upload PDF| Ingestion
-    CL -->|chat message| Main
+    GR -->|upload PDF| Ingestion
+    GR -->|chat message| Main
     Main -->|query_pages / search_fts| Storage
     Main -->|generate| Ollama
     Reviewer -->|generate| Ollama
     Validator -->|generate| Ollama
     IngAgent -->|generate| Ollama
-    Main -->|response| CL
+    Main -->|response| GR
 ```
 
 ---
@@ -56,10 +56,10 @@ flowchart LR
         Browser[Browser]
     end
 
-    subgraph ChainlitApp [app/chainlit_app.py]
-        OnStart[on_chat_start]
-        OnMessage[on_message]
-        ChatSteps[chat_with_steps]
+    subgraph GradioApp [app/gradio_app.py]
+        OnLoad[on_app_load]
+        OnSend[on_send]
+        OnUpload[on_upload]
     end
 
     subgraph ChatAssistant [src/chat/assistant.py]
@@ -103,18 +103,18 @@ flowchart LR
         DocMeta[DocumentMetadata]
     end
 
-    Browser --> OnMessage
-    OnMessage --> IngestPDF
-    OnMessage --> ChatSteps
+    Browser --> OnSend
+    Browser --> OnUpload
+    OnUpload --> IngestPDF
+    OnSend --> PrepareTurn
     IngestPDF --> PDFParser
     PDFParser --> ExtractMeta
     PDFParser --> ParsePages
     ParsePages --> IngestPage
     IngestPage --> PageSchema
     IngestPDF --> InsertDoc
-    ChatSteps --> PrepareTurn
     PrepareTurn --> MainDeps
-    ChatSteps --> CreateMain
+    OnSend --> CreateMain
     CreateMain --> ReaderTools
     CreateMain --> DBTools
     DBTools --> QueryPages
@@ -128,7 +128,7 @@ flowchart LR
 
 | Layer | Component | Responsibility |
 |-------|-----------|----------------|
-| **UI** | Chainlit | Chat interface, file uploads, session state |
+| **UI** | Gradio | Tabbed chat interface, file uploads, session state |
 | **Chat** | ChatAssistant | Orchestrates ingestion and chat turns |
 | **Agents** | Main Agent | Answers questions using tools |
 | | Reviewer Agent | Reviews draft answers for quality |
@@ -148,7 +148,8 @@ flowchart LR
 ```
 Doc2Agent/
 ├── app/
-│   └── chainlit_app.py          # Chainlit UI entry point
+│   ├── gradio_app.py              # Gradio UI entry point
+│   └── utils.py                   # Framework-agnostic utilities
 ├── src/
 │   ├── agents/
 │   │   ├── base.py              # create_agent, run_agent
@@ -190,32 +191,32 @@ Doc2Agent/
 ```mermaid
 sequenceDiagram
     participant U as User
-    participant CL as Chainlit
+    participant GR as Gradio
     participant CA as ChatAssistant
     participant DB as SQLiteStore
     participant PP as PDFParser
     participant IA as IngestionAgent
 
-    U->>CL: Upload PDF
-    CL->>CA: ingest_pdf(path)
+    U->>GR: Upload PDF
+    GR->>CA: ingest_pdf(path)
     CA->>DB: get_document_by_path(path)
     alt Cache hit (same mod_time)
         DB-->>CA: DocumentMetadata
         CA->>DB: load_document(doc_id)
         DB-->>CA: DocumentSchema (cached)
-        CA-->>CL: "Loaded cached: file.pdf"
+        CA-->>GR: "Loaded cached: file.pdf"
     else Cache miss
         CA->>PP: parse_document()
         PP-->>CA: DocumentSchema (raw)
         loop For each page
             CA->>IA: ingest_page(page_data)
             IA-->>CA: PageSchema (enriched)
-            CA-->>CL: Progress update
+            CA-->>GR: Progress update
         end
         CA->>DB: insert_document()
-        CA-->>CL: "Ingested N pages"
+        CA-->>GR: "Ingested N pages"
     end
-    CL-->>U: Status message
+    GR-->>U: Status message
 ```
 
 ### Document Selection
@@ -223,22 +224,16 @@ sequenceDiagram
 ```mermaid
 sequenceDiagram
     participant U as User
-    participant CL as Chainlit
+    participant GR as Gradio
     participant CA as ChatAssistant
     participant DB as SQLiteStore
 
-    U->>CL: /docs or chat start
-    CL->>CA: list_cached_documents()
-    CA->>DB: list_documents()
-    DB-->>CA: List of DocumentMetadata
-    CA-->>CL: Cached docs list
-    CL-->>U: Show action buttons
-    U->>CL: Click "Select doc"
-    CL->>CA: load_cached_document(doc_id)
+    U->>GR: Select from dropdown
+    GR->>CA: load_cached_document(doc_id)
     CA->>DB: load_document(doc_id)
     DB-->>CA: DocumentSchema
-    CA-->>CL: "Loaded file.pdf"
-    CL-->>U: PDF preview + status
+    CA-->>GR: "Loaded file.pdf"
+    GR-->>U: Status update
 ```
 
 ### Chat Query
@@ -246,23 +241,23 @@ sequenceDiagram
 ```mermaid
 sequenceDiagram
     participant U as User
-    participant CL as Chainlit
+    participant GR as Gradio
     participant CA as ChatAssistant
     participant MA as MainAgent
     participant DB as SQLiteStore
     participant RA as ReviewerAgent
 
-    U->>CL: Ask question
-    CL->>CA: prepare_turn(message)
-    CA-->>CL: prompt, deps
-    CL->>MA: run_agent(prompt, deps)
+    U->>GR: Ask question
+    GR->>CA: prepare_turn(message)
+    CA-->>GR: prompt, deps
+    GR->>MA: run_agent(prompt, deps)
     MA->>DB: query_pages(filters)
     DB-->>MA: Matching pages
     MA->>RA: review_draft(question, draft)
     RA-->>MA: Feedback or final answer
-    MA-->>CL: Response
-    CL->>CA: finalize_turn(reply)
-    CL-->>U: Display answer
+    MA-->>GR: Response
+    GR->>CA: finalize_turn(reply)
+    GR-->>U: Display answer
 ```
 
 ---
@@ -279,7 +274,6 @@ sequenceDiagram
 | `PDF_JSON_DIR` | `data` | Directory for optional JSON export |
 | `PDF_JSON_MAX_BYTES` | `2000000` | Max file size for JSON export |
 | `USE_ENRICHMENT` | `true` | Enable LLM page enrichment |
-| `SHOW_INGESTION_LOGS` | `false` | Show per-page progress in UI |
 | `SHOW_REASONING` | `true` | Show `<think>` tags in UI |
 | `PERSONAL_INFO_JSON` | - | JSON with user's personal data |
 
@@ -300,7 +294,7 @@ Defined in `src/agents_config/agents.json`:
 
 ## Tech Stack
 
-- **UI**: Chainlit
+- **UI**: Gradio
 - **Agents**: pydantic-ai
 - **LLM**: Ollama (local inference)
 - **PDF**: PyMuPDF (fitz)
@@ -321,6 +315,6 @@ cp env.example .env
 # Start Ollama
 ollama serve
 
-# Run Chainlit
-uv run chainlit run app/chainlit_app.py
+# Run the app
+make run
 ```

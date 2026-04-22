@@ -1,1 +1,0 @@
-# Welcome to Doc2Agent app

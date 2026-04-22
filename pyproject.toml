@@ -20,7 +20,7 @@ dependencies = [
     "openai>=1.0.0",
     "pypdf>=4.0.0",
     "pymupdf>=1.24.0",
-    "chainlit>=1.0.0",
+    "gradio>=5.0.0",
 ]
 
 [tool.pytest.ini_options]

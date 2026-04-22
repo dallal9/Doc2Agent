@@ -22,7 +22,7 @@ Doc2Agent transforms static PDF documents into interactive knowledge bases. Usin
 - Full-text search with SQLite FTS5
 - Query caching for improved performance
 - Personal information validation
-- Configurable logging (terminal + optional log file)
+- Configurable logging (file by default + optional terminal stream)
 - File-based configuration (agents/models/backends and prompts)
 
 ---
@@ -55,11 +55,11 @@ cp env.example .env
 
 4. **Start the application:**
 ```bash
-uv run chainlit run app/chainlit_app.py
+make run
 ```
 
 5. **Access the web UI:**
-   - Open your browser to the URL shown in the terminal (typically `http://localhost:8000`)
+   - Open your browser to the URL shown in the terminal (typically `http://localhost:7860`)
    - Upload a PDF document
    - Start asking questions
 
@@ -90,15 +90,17 @@ uv run chainlit run app/chainlit_app.py
 
 ### User Interface
 
-- **Chainlit web UI**: Modern, interactive chat interface
-- **Document upload**: Drag-and-drop PDF upload with progress tracking
+- **Gradio web UI**: Tabbed interface for multiple features (chat, and more to come)
+- **Document upload**: PDF upload with progress tracking
 - **Document selection**: Switch between multiple cached documents
 - **Query history**: View and manage cached queries per document
+- **Inline traces**: Live status updates while checking cache/running agent
 
 ### Logging
 
-- Logs to the terminal by default; optional file logging.
-- Configurable via: `LOG_LEVEL`, `LOG_TO_FILE`, `LOG_FILE`.
+- Logs to file by default and prints the resolved log file path on startup.
+- Optional terminal streaming via `LOG_TO_STDOUT=true`.
+- Configurable via: `LOG_LEVEL`, `LOG_TO_FILE`, `LOG_FILE`, `LOG_TO_STDOUT`.
 
 ### Configuration
 
@@ -112,7 +114,7 @@ uv run chainlit run app/chainlit_app.py
 ```mermaid
 flowchart TB
     subgraph UI[User Interface]
-        CL[Chainlit Web UI]
+        GR[Gradio Web UI]
     end
 
     subgraph Ingestion[PDF Ingestion Pipeline]
@@ -139,14 +141,14 @@ flowchart TB
         Ollama[Ollama<br/>Local Inference]
     end
 
-    CL -->|upload PDF| Ingestion
-    CL -->|chat message| Main
+    GR -->|upload PDF| Ingestion
+    GR -->|chat message| Main
     Main -->|query_pages / search_fts| Storage
     Main -->|generate| Ollama
     Reviewer -->|generate| Ollama
     Validator -->|generate| Ollama
     IngAgent -->|generate| Ollama
-    Main -->|response| CL
+    Main -->|response| GR
 ```
 
 **Data Flow:**
@@ -192,6 +194,7 @@ For detailed architecture documentation, see [docs/architecture.md](docs/archite
 |----------|---------|-------------|
 | `INLINE_DOC_MAX_CHARS` | `20000` | Max characters to inline in prompt |
 | `SHOW_REASONING` | `true` | Display `<think>` tags in UI |
+| `SHOW_INGESTION_LOGS` | `false` | Stream per-page ingestion progress in chat UI |
 
 #### Query Caching
 
@@ -208,7 +211,8 @@ For detailed architecture documentation, see [docs/architecture.md](docs/archite
 |----------|-------------|
 | `LOG_LEVEL` | Logging level (DEBUG, INFO, WARNING, ERROR) |
 | `LOG_FILE` | Path to log file |
-| `LOG_TO_FILE` | Enable file logging (true/false) |
+| `LOG_TO_FILE` | Enable file logging (true/false, default: true) |
+| `LOG_TO_STDOUT` | Stream logs to terminal in addition to file (true/false, default: false) |
 
 ### Config files
 
@@ -219,7 +223,7 @@ For detailed architecture documentation, see [docs/architecture.md](docs/archite
 
 ## Tech Stack
 
-- **UI Framework**: [Chainlit](https://github.com/chainlit/chainlit) - Modern chat interface
+- **UI Framework**: [Gradio](https://github.com/gradio-app/gradio) - Tabbed web interface
 - **Agent Framework**: [pydantic-ai](https://github.com/pydantic/pydantic-ai) - Type-safe AI agents
 - **LLM Backend**: [Ollama](https://ollama.com/) - Local LLM inference
 - **PDF Processing**: [PyMuPDF (fitz)](https://pymupdf.readthedocs.io/) - High-performance PDF parsing
@@ -234,9 +238,8 @@ For detailed architecture documentation, see [docs/architecture.md](docs/archite
 ```
 Doc2Agent/
 ├── app/
-│   ├── chainlit_app.py          # Chainlit UI entry point
-│   ├── config.toml              # Chainlit configuration
-│   └── utils.py                 # UI utilities
+│   ├── gradio_app.py             # Gradio UI entry point
+│   └── utils.py                  # UI utilities (framework-agnostic)
 ├── src/
 │   ├── agents/
 │   │   ├── base.py              # Agent creation and execution
@@ -300,23 +303,22 @@ The project uses `uv` for dependency management. Key commands:
 
 1. **Start the application:**
    ```bash
-   uv run chainlit run app/chainlit_app.py
+   make run
    ```
 
 2. **Upload a document:**
-   - Click the upload button in the UI
+   - Click the upload button in the sidebar
    - Select a PDF file
    - Wait for ingestion to complete
 
 3. **Ask questions:**
    - Type your question in the chat interface
    - The system will search the document and generate an answer
-   - Use `/reset` to clear the chat history
 
 4. **Manage documents:**
-   - Use `/docs` to view cached documents
-   - Select a document to switch context
-   - Delete documents or flush cache as needed
+   - Use the "Cached Documents" dropdown to view and select documents
+   - Click "Load" to switch to a cached document
+   - Click "Delete" to remove a document, or "Flush Cache" to clear cached queries
 
 ### Advanced Features
 
