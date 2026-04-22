@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import os
 import shutil
+from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
@@ -32,6 +33,7 @@ class ChatAssistant:
         self.document: StructuredDocument | None = None
         self.enriched_doc: DocumentSchema | None = None
         self.document_id: str | None = None
+        self.session_id: str | None = None
         self.text: str = ""
         self.history: list[tuple[str, str]] = []
         logger.info("Initializing ChatAssistant backend=%s", self.config.default_backend)
@@ -285,3 +287,48 @@ class ChatAssistant:
 
         logger.info("Deleted cached doc_id=%s", doc_id)
         return f"Deleted document {doc_id}"
+
+    def create_chat_session(self, title: str | None = None) -> str:
+        timestamp_title = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        session_title = (title or timestamp_title).strip() or timestamp_title
+        self.session_id = self.store.create_chat_session(title=session_title, doc_id=self.document_id)
+        return self.session_id
+
+    def list_chat_sessions(self, limit: int = 30) -> list[dict]:
+        return self.store.list_chat_sessions(limit=limit)
+
+    def load_chat_session(self, session_id: str) -> list[dict]:
+        messages = self.store.get_chat_messages(session_id)
+        self.session_id = session_id
+        self.history = [
+            (msg["role"], msg["content"])
+            for msg in messages
+            if msg["role"] in {"user", "assistant"}
+        ]
+        return [{"role": msg["role"], "content": msg["content"]} for msg in messages]
+
+    def save_chat_message(self, role: str, content: str) -> None:
+        if not self.session_id:
+            return
+        self.store.save_chat_message(session_id=self.session_id, role=role, content=content)
+
+    def sync_session_document(self) -> None:
+        if not self.session_id:
+            return
+        self.store.update_chat_session_doc(self.session_id, self.document_id)
+
+    def clear_current_session_messages(self) -> int:
+        if not self.session_id:
+            return 0
+        self.history = []
+        return self.store.clear_chat_messages(self.session_id)
+
+    def clear_all_sessions(self) -> int:
+        self.session_id = None
+        self.history = []
+        return self.store.clear_all_chat_sessions()
+
+    def get_current_session(self) -> dict | None:
+        if not self.session_id:
+            return None
+        return self.store.get_chat_session(self.session_id)
