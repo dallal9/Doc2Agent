@@ -1,4 +1,4 @@
-.PHONY: lint lint-check test
+.PHONY: lint lint-check test run
 
 lint:
 	uv run black . --line-length 100
@@ -10,4 +10,7 @@ lint-check:
 
 test:
 	uv run pytest
+
+run:
+	uv run python app/gradio_app.py
 

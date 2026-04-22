@@ -12,27 +12,27 @@
   },
   "agents": {
     "main": {
-      "model": "ministral-3:3b",
+      "model": "google/gemma-4-26b-a4b-it",
       "temperature": 0.2,
-      "backend": "local",
+      "backend": "openrouter",
       "max_turns": 12
     },
     "reviewer": {
-      "model": "deepseek-r1:8b",
+      "model": "google/gemma-4-26b-a4b-it",
       "temperature": 0.1,
-      "backend": "local",
+      "backend": "openrouter",
       "max_turns": 6
     },
     "validator": {
-      "model": "ministral-3:3b",
+      "model": "google/gemma-4-26b-a4b-it",
       "temperature": 0.1,
-      "backend": "local",
+      "backend": "openrouter",
       "max_turns": 8
     },
     "ingestion": {
-      "model": "ministral-3:3b",
+      "model": "google/gemma-4-26b-a4b-it",
       "temperature": 0.0,
-      "backend": "local",
+      "backend": "openrouter",
       "max_turns": 1
     }
   }
