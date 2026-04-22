@@ -103,7 +103,12 @@ async def on_app_load():
     session_id = assistant.create_chat_session()
     choices = _doc_choices(assistant)
     sessions = _session_choices(assistant)
-    welcome = [{"role": "assistant", "content": f"Hi! Upload a PDF or select a cached document to get started."}]
+    welcome = [
+        {
+            "role": "assistant",
+            "content": f"Hi! Upload a PDF or select a cached document to get started.",
+        }
+    ]
     return (
         assistant,
         welcome,
@@ -422,7 +427,9 @@ def build_chat_tab():
                 delete_btn = gr.Button("Delete", variant="stop", size="sm")
             with gr.Row():
                 flush_btn = gr.Button("Clear Cached Replies (Selected Doc)", size="sm")
-                flush_all_btn = gr.Button("Clear Cached Replies (All Docs)", variant="stop", size="sm")
+                flush_all_btn = gr.Button(
+                    "Clear Cached Replies (All Docs)", variant="stop", size="sm"
+                )
             detach_btn = gr.Button("Detach File", size="sm")
             gr.Markdown("### Sessions")
             session_dropdown = gr.Dropdown(label="Recent Sessions", choices=[], interactive=True)
@@ -448,12 +455,22 @@ def build_chat_tab():
     # -- Wiring --
 
     # Page load
-    chatbot.change(fn=None, js="() => { const el = document.querySelector('.chatbot'); if(el) el.scrollTop = el.scrollHeight; }")
+    chatbot.change(
+        fn=None,
+        js="() => { const el = document.querySelector('.chatbot'); if(el) el.scrollTop = el.scrollHeight; }",
+    )
 
     load_event = gr.on(
         triggers=[msg_input.submit, send_btn.click],
         fn=on_send,
-        inputs=[msg_input, chatbot, assistant_state, file_name_state, file_path_state, session_id_state],
+        inputs=[
+            msg_input,
+            chatbot,
+            assistant_state,
+            file_name_state,
+            file_path_state,
+            session_id_state,
+        ],
         outputs=[
             msg_input,
             chatbot,
@@ -468,7 +485,14 @@ def build_chat_tab():
     file_upload.upload(
         fn=on_upload,
         inputs=[file_upload, assistant_state, chatbot],
-        outputs=[assistant_state, file_name_state, file_path_state, status_md, chatbot, doc_dropdown],
+        outputs=[
+            assistant_state,
+            file_name_state,
+            file_path_state,
+            status_md,
+            chatbot,
+            doc_dropdown,
+        ],
     )
 
     load_btn.click(
@@ -485,7 +509,14 @@ def build_chat_tab():
     delete_btn.click(
         fn=on_delete_doc,
         inputs=[doc_dropdown, assistant_state, file_name_state, chatbot],
-        outputs=[assistant_state, file_name_state, file_path_state, status_md, chatbot, doc_dropdown],
+        outputs=[
+            assistant_state,
+            file_name_state,
+            file_path_state,
+            status_md,
+            chatbot,
+            doc_dropdown,
+        ],
     )
 
     flush_btn.click(
@@ -553,7 +584,14 @@ def create_app() -> gr.Blocks:
 
         demo.load(
             fn=on_app_load,
-            outputs=[assistant_state, chatbot, doc_dropdown, status_md, session_id_state, session_dropdown],
+            outputs=[
+                assistant_state,
+                chatbot,
+                doc_dropdown,
+                status_md,
+                session_id_state,
+                session_dropdown,
+            ],
         )
     return demo
 

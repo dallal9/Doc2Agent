@@ -37,18 +37,14 @@ def configure_logging(*, log_file: str | None = None) -> None:
         Path(file_path).parent.mkdir(parents=True, exist_ok=True)
         fh = logging.FileHandler(file_path)
         fh.setLevel(level)
-        fh.setFormatter(
-            logging.Formatter("%(asctime)s - %(levelname)s - %(name)s - %(message)s")
-        )
+        fh.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(name)s - %(message)s"))
         root.addHandler(fh)
         print(f"[Doc2Agent] Logging to file: {Path(file_path).resolve()}")
 
     if _is_enabled(os.getenv("LOG_TO_STDOUT"), "false"):
         sh = logging.StreamHandler(sys.stdout)
         sh.setLevel(level)
-        sh.setFormatter(
-            logging.Formatter("%(asctime)s - %(levelname)s - %(name)s - %(message)s")
-        )
+        sh.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(name)s - %(message)s"))
         root.addHandler(sh)
 
 

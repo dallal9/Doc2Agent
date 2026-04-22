@@ -291,7 +291,9 @@ class ChatAssistant:
     def create_chat_session(self, title: str | None = None) -> str:
         timestamp_title = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         session_title = (title or timestamp_title).strip() or timestamp_title
-        self.session_id = self.store.create_chat_session(title=session_title, doc_id=self.document_id)
+        self.session_id = self.store.create_chat_session(
+            title=session_title, doc_id=self.document_id
+        )
         return self.session_id
 
     def list_chat_sessions(self, limit: int = 30) -> list[dict]:
