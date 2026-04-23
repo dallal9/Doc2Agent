@@ -211,3 +211,4 @@ __marimo__/
 docs/local_*.md
 data/
 .files/
+*_local*.md
