@@ -1,187 +1,171 @@
-# Doc2Agent Part 2 — Annotation & Evaluation Extension
+# Doc2Agent Part 2
 
-## Goal
-Extend Doc2Agent to support:
-- Creation of labeled datasets from PDFs
-- Running pipelines on datasets
-- Evaluating outputs (manual + LLM-based)
+## Summary
 
-This extends the existing system without changing core architecture.
+## What we are building
+Extend Doc2Agent into a **local system for dataset creation and evaluation on PDFs**.
 
----
+## Core flow
 
-## Core Concepts (Pydantic Models)
 
-### Document
-```python
-class Document(BaseModel):
-    id: str
-    file_path: str
-    metadata: dict
-    labels: list[str]  # document-level labels
-```
+PDF → Annotation → Dataset → Prediction → Evaluation
 
-### Annotation (Q&A)
-```python
-class Annotation(BaseModel):
-    document_id: str
-    query: str
-    expected_answer: str
-    evidence_spans: list[Span]  # highlighted text regions
-```
+## What it does
+- Annotate PDFs to create Q&A + evidence spans
+- Build datasets from annotations
+- Run existing pipeline to generate predictions
+- Evaluate results (manual or LLM-as-judge)
+- Track performance via metrics
 
-```python
-class Span(BaseModel):
-    page: int
-    start: int
-    end: int
-    text: str
-```
+## Key idea
+Reuse the current pipeline and make **annotation the source of truth** for evaluation.
 
-### Dataset
-```python
-class Dataset(BaseModel):
-    id: str
-    name: str
-    description: str
-    annotations: list[Annotation]
-```
+## Outcome
+Doc2Agent becomes a **document evaluation and experimentation tool**, not just a chat interface.
 
-### Prediction (Pipeline Output)
-```python
-class Prediction(BaseModel):
-    annotation_id: str
-    predicted_answer: str
-    context_used: list[str]
-```
 
-### Metric
-```python
-class Metric(BaseModel):
-    name: str
-    type: Literal["bool", "int", "float"]
-    aggregation: Literal["avg", "sum", "max", "min"]
-    judge_prompt: Optional[str]  # for LLM-as-judge
-```
+## Milestone 1 — Document Ingestion & Annotation
 
-### Evaluation
-```python
-class Evaluation(BaseModel):
-    dataset_id: str
-    metrics: list[Metric]
-```
+This should be like a new page, tab, or app in the gradio app, where we have document editor and annotator. This could be a react app or something similar. 
 
-### EvaluationResult
-```python
-class EvaluationResult(BaseModel):
-    prediction_id: str
-    metric_name: str
-    score: float | bool
-```
+This should be a nice react app where you can select text from the pdf and it would be marked automatically as span. Use https://docs.tagtog.com/ as inspiration.  
+
+### Goal
+Create structured labeled data (`Document` + `Annotation`) from PDFs.
+
+### Scope
+Implements:
+- `Document`
+- `Annotation`
+- `Span`
+
+### Features
+- Document Annotation Tab:
+  - Upload and store PDF locally
+  - Text in the document should be selectable. 
+  - Highlight text spans (mapped to `Span`)
+  - Support:
+    - span-based annotations: user can select multiple parts of the document to represent the span. 
+    - page-based annotations user can select pages by number so their text would be fully used in the span. 
+  - Add:
+    - Q&A annotations (`Annotation`)
+    - User should select a span and enter question and answer and the tuple should be stored  
+  - there should be distinction between original document (PDF), and annotation +  document, we could have different versions of the same documents by annotating it differently so we can create a new unique label using original document name. 
+
+### Output
+- Persisted `Document`
+- Persisted `Annotation` (linked to document)
+- There is a nice view here user can scroll through and annotated document, view, edit annotations. 
+- The annotations can be exported as a json mostly tuples (question, answer, and spans)
+
 
 ---
 
-## Application Structure (Tabs)
+## Milestone 2 — Dataset Creation & Pipeline Execution
 
-### 1. Chat Tab (existing)
-- No change
-- Uses same pipeline for inference
+### Goal
+Construct datasets from annotations and run the existing pipeline to generate predictions.
 
-### 2. Document Annotation Tab
-Purpose: Create `Document` + `Annotation`
+### Scope
+Implements:
+- `Dataset`
+- `Prediction`
 
-Features:
-- Upload PDF (store locally)
-- Extract text (no OCR required)
-- Highlight text spans (per page)
+### Features
+
+#### Dataset Creation Tab
+- Select existing annotations
+- Group into `Dataset`
 - Add:
-  - document-level labels
-  - Q&A annotations
-- Support:
-  - span-based annotation
-  - page-based annotation
+  - name
+  - description
 
-### 3. Dataset Creation Tab
-Purpose: Create `Dataset`
+#### Run Evaluation Tab (Execution Phase)
+- Load dataset
+- For each `Annotation`:
+  - run pipeline (same as Chat Tab)
+  - generate `Prediction`
+- Store:
+  - predicted_answer
+  - context_used
+  - link to annotation
 
-Features:
-- Select documents
-- Select annotations
-- Add dataset metadata (name, description)
-- Save dataset
+### Output
+- `Dataset` containing annotations
+- `Prediction` linked to each annotation
 
-### 4. Metrics & Evaluation Setup Tab
-Purpose: Define `Metric` and `Evaluation`
+---
 
-Features:
-- Create metrics:
-  - exact match
-  - similarity (embedding or LLM)
-  - custom LLM judge
-- Define aggregation method
-- Define evaluation config (dataset + metrics)
+## Milestone 3 — Evaluation & Metrics System
 
-### 5. Run Evaluation Tab
-Purpose: Execute pipeline on dataset
+### Goal
+Evaluate predictions using defined metrics and provide aggregated results.
 
-Flow:
-1. Load dataset
-2. For each annotation:
-   - run pipeline (same as chat)
-   - generate `Prediction`
-3. Store predictions
+### Scope
+Implements:
+- `Metric`
+- `Evaluation`
+- `EvaluationResult`
+
+### Features
+
+#### Metrics & Evaluation Setup Tab
+- Define `Metric`:
+  - type: bool | int | float
+  - aggregation: avg | sum | max | min
+  - optional `judge_prompt`
+- Define `Evaluation`:
+  - dataset_id
+  - metrics
+
+#### Run Evaluation Tab (Scoring Phase)
+- For each `Prediction`:
+  - compare with `Annotation.expected_answer`
 
 Evaluation modes:
-- **Manual**
-  - user reviews predictions
-  - assigns scores
-- **LLM-as-judge**
-  - use `judge_prompt`
-  - compare predicted vs expected
+- Manual:
+  - user assigns score
+- LLM-as-judge:
+  - use `Metric.judge_prompt`
 
-Output:
-- `EvaluationResult`
-- link predictions to annotations
-
-### 6. Dashboard Tab
-Purpose: Overview & statistics
-
-Displays:
-- Documents count
-- Datasets
-- Evaluation runs
-- Metrics summary:
-  - avg scores
-  - per-metric breakdown
-- Optional:
-  - failure cases
-  - low-score samples
+Store:
+- `EvaluationResult` per prediction per metric
 
 ---
 
-## Data Flow
+## Milestone 4 — Dashboard & System Overview
 
-```
+### Goal
+Provide visibility over documents, datasets, and evaluation performance.
+
+### Scope
+No new models (uses existing)
+
+### Features
+- Dashboard Tab:
+  - Documents overview
+  - Datasets overview
+  - Evaluation runs
+  - Aggregated metrics:
+    - avg score per metric
+    - per-dataset breakdown
+- Optional:
+  - filter low-score predictions
+  - inspect failure cases
+
+---
+
+## Execution Flow (Final)
 PDF → Document → Annotation → Dataset
 Dataset → Pipeline → Prediction
-Prediction + Annotation → Evaluation → Results
-```
+Prediction → Evaluation → EvaluationResult
+
 
 ---
 
-## Key Constraints
+## Notes
 
-- PDFs must be text-based (no OCR for now)
-- All data stored locally
-- Reuse same pipeline for:
-  - chat
-  - evaluation
+- Chat Tab remains unchanged (reused for pipeline execution)
 - Annotation is the source of truth for datasets
-
----
-
-## Non-Goals (for now)
-
-- No multi-user support
-- No cloud storage
-- No real-time collaboration
+- Evaluation reuses the same inference pipeline
+- No OCR, no multi-user, local-only system

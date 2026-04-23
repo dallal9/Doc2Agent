@@ -7,6 +7,7 @@ from src.bootstrap import init_app
 
 init_app()
 
+from app.annotation_tab import annotator_head_script, build_annotation_tab, on_tab_load
 from app.utils import ChatResult, render_chat_with_cache
 from src.agents import run_agent
 from src.chat import ChatAssistant
@@ -99,10 +100,20 @@ def _button_update(enabled: bool):
 
 async def on_app_load():
     """Initialise a ChatAssistant when the page loads."""
+    import time as _t
+
+    t0 = _t.perf_counter()
     assistant = ChatAssistant()
+    t1 = _t.perf_counter()
     session_id = assistant.create_chat_session()
     choices = _doc_choices(assistant)
     sessions = _session_choices(assistant)
+    logger.info(
+        "on_app_load: assistant_init=%.2fs session+choices=%.2fs total=%.2fs",
+        t1 - t0,
+        _t.perf_counter() - t1,
+        _t.perf_counter() - t0,
+    )
     welcome = [
         {
             "role": "assistant",
@@ -570,7 +581,7 @@ def build_chat_tab():
 
 
 def create_app() -> gr.Blocks:
-    with gr.Blocks(title=ASSISTANT_NAME) as demo:
+    with gr.Blocks(title=ASSISTANT_NAME, head=annotator_head_script()) as demo:
         with gr.Tabs():
             with gr.Tab("Chat with Documents"):
                 (
@@ -581,6 +592,8 @@ def create_app() -> gr.Blocks:
                     session_id_state,
                     session_dropdown,
                 ) = build_chat_tab()
+            with gr.Tab("Annotate"):
+                ann_doc_dd = build_annotation_tab(assistant_state)
 
         demo.load(
             fn=on_app_load,
@@ -592,10 +605,20 @@ def create_app() -> gr.Blocks:
                 session_id_state,
                 session_dropdown,
             ],
+        ).then(
+            fn=on_tab_load,
+            inputs=[assistant_state],
+            outputs=[ann_doc_dd],
         )
     return demo
 
 
 if __name__ == "__main__":
     app = create_app()
-    app.launch(server_name="0.0.0.0", server_port=7860, theme=gr.themes.Soft())
+    pdf_storage_dir = os.path.abspath(os.getenv("PDF_STORAGE_DIR", "data/pdfs"))
+    app.launch(
+        server_name="0.0.0.0",
+        server_port=7860,
+        theme=gr.themes.Soft(),
+        allowed_paths=[pdf_storage_dir],
+    )

@@ -6,7 +6,15 @@ import uuid
 from datetime import datetime
 from typing import Iterator
 
-from src.schemas import DocumentMetadata, DocumentSchema, Heading, PageSchema
+from src.schemas import (
+    Annotation,
+    AnnotationSet,
+    DocumentMetadata,
+    DocumentSchema,
+    Heading,
+    PageSchema,
+    Span,
+)
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS documents (
@@ -97,21 +105,94 @@ CREATE TABLE IF NOT EXISTS chat_messages (
 CREATE INDEX IF NOT EXISTS idx_chat_sessions_updated_at ON chat_sessions(updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_chat_sessions_doc_id ON chat_sessions(doc_id, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_chat_messages_session_seq ON chat_messages(session_id, seq);
+
+CREATE TABLE IF NOT EXISTS annotation_sets (
+    set_id TEXT PRIMARY KEY,
+    doc_id TEXT NOT NULL,
+    label TEXT NOT NULL,
+    description TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(doc_id, label),
+    FOREIGN KEY (doc_id) REFERENCES documents(doc_id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS annotations (
+    annotation_id TEXT PRIMARY KEY,
+    set_id TEXT NOT NULL,
+    question TEXT NOT NULL,
+    answer TEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (set_id) REFERENCES annotation_sets(set_id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS annotation_spans (
+    span_id TEXT PRIMARY KEY,
+    annotation_id TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK(kind IN ('text','page')),
+    page_num INTEGER NOT NULL,
+    quoted_text TEXT,
+    FOREIGN KEY (annotation_id) REFERENCES annotations(annotation_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_annotation_sets_doc ON annotation_sets(doc_id);
+CREATE INDEX IF NOT EXISTS idx_annotations_set ON annotations(set_id);
+CREATE INDEX IF NOT EXISTS idx_spans_ann ON annotation_spans(annotation_id);
 """
 
 
 class SQLiteStore:
     def __init__(self, db_path: str = "pdf_data.db"):
         self.db_path = db_path
-        self.conn = sqlite3.connect(db_path)
+        self.conn = sqlite3.connect(db_path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA foreign_keys=ON")
         self.conn.execute("PRAGMA journal_mode=WAL")
         self._init_schema()
 
     def _init_schema(self):
+        self._drop_stale_annotation_tables()
         self.conn.executescript(SCHEMA_SQL)
         self._migrate_schema()
+        self.conn.commit()
+
+    def _drop_stale_annotation_tables(self):
+        """Drop annotation/dataset/evaluation tables from earlier abandoned
+        attempts. Their FKs reference columns that no longer match, which
+        causes 'foreign key mismatch' on every write. Safe: no shipped feature
+        reads these."""
+        expected = {
+            "annotation_sets": {"set_id", "doc_id", "label", "description", "created_at"},
+            "annotations": {"annotation_id", "set_id", "question", "answer", "created_at"},
+            "annotation_spans": {
+                "span_id",
+                "annotation_id",
+                "kind",
+                "page_num",
+                "quoted_text",
+            },
+        }
+        # Always-drop legacy tables (never used by current code)
+        legacy = [
+            "evaluation_results",
+            "evaluations",
+            "metrics",
+            "predictions",
+            "dataset_annotations",
+            "datasets",
+            "annotation_documents",
+        ]
+        for name in legacy:
+            self.conn.execute(f"DROP TABLE IF EXISTS {name}")
+        # Conditionally drop annotation tables whose columns don't match
+        for name in ("annotation_spans", "annotations", "annotation_sets"):
+            row = self.conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name=?", (name,)
+            ).fetchone()
+            if not row:
+                continue
+            cols = {r[1] for r in self.conn.execute(f"PRAGMA table_info({name})").fetchall()}
+            if cols != expected[name]:
+                self.conn.execute(f"DROP TABLE IF EXISTS {name}")
         self.conn.commit()
 
     def _migrate_schema(self):
@@ -519,6 +600,110 @@ class SQLiteStore:
         result = self.conn.execute("DELETE FROM chat_sessions")
         self.conn.commit()
         return result.rowcount
+
+    # -- Annotations --------------------------------------------------------
+
+    def create_annotation_set(
+        self, doc_id: str, label: str, description: str | None = None
+    ) -> str:
+        set_id = str(uuid.uuid4())
+        self.conn.execute(
+            "INSERT INTO annotation_sets (set_id, doc_id, label, description) VALUES (?, ?, ?, ?)",
+            (set_id, doc_id, label, description),
+        )
+        self.conn.commit()
+        return set_id
+
+    def list_annotation_sets(self, doc_id: str) -> list[AnnotationSet]:
+        rows = self.conn.execute(
+            "SELECT * FROM annotation_sets WHERE doc_id = ? ORDER BY created_at DESC",
+            (doc_id,),
+        ).fetchall()
+        return [AnnotationSet(**dict(r)) for r in rows]
+
+    def get_annotation_set(self, set_id: str) -> AnnotationSet | None:
+        row = self.conn.execute(
+            "SELECT * FROM annotation_sets WHERE set_id = ?", (set_id,)
+        ).fetchone()
+        return AnnotationSet(**dict(row)) if row else None
+
+    def delete_annotation_set(self, set_id: str) -> bool:
+        result = self.conn.execute("DELETE FROM annotation_sets WHERE set_id = ?", (set_id,))
+        self.conn.commit()
+        return result.rowcount > 0
+
+    def add_annotation(
+        self, set_id: str, question: str, answer: str, spans: list[Span]
+    ) -> str:
+        annotation_id = str(uuid.uuid4())
+        self.conn.execute(
+            "INSERT INTO annotations (annotation_id, set_id, question, answer) VALUES (?, ?, ?, ?)",
+            (annotation_id, set_id, question, answer),
+        )
+        for s in spans:
+            self.conn.execute(
+                "INSERT INTO annotation_spans (span_id, annotation_id, kind, page_num, quoted_text) VALUES (?, ?, ?, ?, ?)",
+                (str(uuid.uuid4()), annotation_id, s.kind, s.page_num, s.quoted_text),
+            )
+        self.conn.commit()
+        return annotation_id
+
+    def list_annotations(self, set_id: str) -> list[Annotation]:
+        rows = self.conn.execute(
+            "SELECT * FROM annotations WHERE set_id = ? ORDER BY created_at ASC",
+            (set_id,),
+        ).fetchall()
+        annotations = []
+        for r in rows:
+            span_rows = self.conn.execute(
+                "SELECT * FROM annotation_spans WHERE annotation_id = ? ORDER BY page_num",
+                (r["annotation_id"],),
+            ).fetchall()
+            spans = [Span(**dict(sr)) for sr in span_rows]
+            annotations.append(
+                Annotation(
+                    annotation_id=r["annotation_id"],
+                    set_id=r["set_id"],
+                    question=r["question"],
+                    answer=r["answer"],
+                    created_at=r["created_at"],
+                    spans=spans,
+                )
+            )
+        return annotations
+
+    def delete_annotation(self, annotation_id: str) -> bool:
+        result = self.conn.execute(
+            "DELETE FROM annotations WHERE annotation_id = ?", (annotation_id,)
+        )
+        self.conn.commit()
+        return result.rowcount > 0
+
+    def export_annotation_set(self, set_id: str) -> dict | None:
+        aset = self.get_annotation_set(set_id)
+        if not aset:
+            return None
+        doc = self.get_document_metadata(aset.doc_id)
+        annotations = self.list_annotations(set_id)
+        return {
+            "document": {
+                "doc_id": aset.doc_id,
+                "file_name": doc.file_name if doc else None,
+            },
+            "label": aset.label,
+            "description": aset.description,
+            "annotations": [
+                {
+                    "question": a.question,
+                    "answer": a.answer,
+                    "spans": [
+                        {"kind": s.kind, "page_num": s.page_num, "quoted_text": s.quoted_text}
+                        for s in a.spans
+                    ],
+                }
+                for a in annotations
+            ],
+        }
 
     def close(self):
         self.conn.close()
