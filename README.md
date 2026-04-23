@@ -24,6 +24,7 @@ Doc2Agent transforms static PDF documents into interactive knowledge bases. Usin
 - Personal information validation
 - Configurable logging (file by default + optional terminal stream)
 - File-based configuration (agents/models/backends and prompts)
+- **Annotate** tab: Q&A over PDF spans, annotation sets, JSON export (shared document DB; uploads parse without LLM enrichment)
 
 ---
 
@@ -58,10 +59,7 @@ cp env.example .env
 make run
 ```
 
-5. **Access the web UI:**
-   - Open your browser to the URL shown in the terminal (typically `http://localhost:7860`)
-   - Upload a PDF document
-   - Start asking questions
+5. **Access the web UI** (typically `http://localhost:7860`): **Chat** for Q&A with agents; **Annotate** for manual labels and export.
 
 ---
 
@@ -86,12 +84,13 @@ make run
 - **SQLite with FTS5**: Full-text search across all ingested documents
 - **Query caching**: Intelligent caching system reduces redundant LLM calls
 - **Document management**: Load, select, and manage multiple documents from the UI
+- **Annotations**: Same SQLite DB as chat; separate tables for sets, Q&A rows, and spans
 - **Cache management**: Built-in cache flushing and automatic cleanup
 
 ### User Interface
 
-- **Gradio web UI**: Tabbed interface for multiple features (chat, and more to come)
-- **Document upload**: PDF upload with progress tracking
+- **Gradio**: **Chat** tab (upload, agents, cache) and **Annotate** tab (PDF.js viewer, span staging, sets, export)
+- **Document upload**: PDF upload with progress tracking (chat may enrich pages; Annotate parses only)
 - **Document selection**: Switch between multiple cached documents
 - **Query history**: View and manage cached queries per document
 - **Inline traces**: Live status updates while checking cache/running agent
@@ -114,7 +113,7 @@ make run
 ```mermaid
 flowchart TB
     subgraph UI[User Interface]
-        GR[Gradio Web UI]
+        GR[Gradio — Chat + Annotate]
     end
 
     subgraph Ingestion[PDF Ingestion Pipeline]
@@ -223,7 +222,7 @@ For detailed architecture documentation, see [docs/architecture.md](docs/archite
 
 ## Tech Stack
 
-- **UI Framework**: [Gradio](https://github.com/gradio-app/gradio) - Tabbed web interface
+- **UI Framework**: [Gradio](https://github.com/gradio-app/gradio) — Chat + Annotate tabs; client PDF via PDF.js
 - **Agent Framework**: [pydantic-ai](https://github.com/pydantic/pydantic-ai) - Type-safe AI agents
 - **LLM Backend**: [Ollama](https://ollama.com/) - Local LLM inference
 - **PDF Processing**: [PyMuPDF (fitz)](https://pymupdf.readthedocs.io/) - High-performance PDF parsing
@@ -238,7 +237,9 @@ For detailed architecture documentation, see [docs/architecture.md](docs/archite
 ```
 Doc2Agent/
 ├── app/
-│   ├── gradio_app.py             # Gradio UI entry point
+│   ├── gradio_app.py             # Gradio UI entry point (tabs, head script)
+│   ├── annotation_tab.py         # Annotate tab UI + handlers
+│   ├── static/annotator.js       # PDF.js viewer + span bridge
 │   └── utils.py                  # UI utilities (framework-agnostic)
 ├── src/
 │   ├── agents/
@@ -254,7 +255,8 @@ Doc2Agent/
 │   ├── chat/
 │   │   └── assistant.py         # Chat orchestration
 │   ├── schemas/
-│   │   └── document.py          # Document and page schemas
+│   │   ├── document.py          # Document and page schemas
+│   │   └── annotation.py        # Annotation / span models
 │   ├── storage/
 │   │   └── sqlite_store.py      # SQLite persistence layer
 │   ├── tools/
@@ -319,6 +321,10 @@ The project uses `uv` for dependency management. Key commands:
    - Use the "Cached Documents" dropdown to view and select documents
    - Click "Load" to switch to a cached document
    - Click "Delete" to remove a document, or "Flush Cache" to clear cached queries
+
+### Annotate tab
+
+Open **Annotate**, pick or upload a PDF, create/select an **annotation set**, stage spans (text selection or page), enter Q&A, **Save**, then **Export JSON** if needed.
 
 ### Advanced Features
 
