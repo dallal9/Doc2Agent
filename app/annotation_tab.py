@@ -1,4 +1,5 @@
 """Annotate tab: PDF viewer + Q&A span annotations."""
+
 from __future__ import annotations
 
 import json
@@ -68,8 +69,8 @@ def _annotations_html(assistant: ChatAssistant | None, set_id: str | None) -> st
         )
         parts.append(
             f'<div style="padding:6px;border-bottom:1px solid var(--border-color-primary,#ddd);">'
-            f'<b>Q:</b> {escape(a.question)}<br>'
-            f'<b>A:</b> {escape(a.answer)}<br>'
+            f"<b>Q:</b> {escape(a.question)}<br>"
+            f"<b>A:</b> {escape(a.answer)}<br>"
             f'<span style="opacity:.7;">spans: {spans}</span>'
             f"</div>"
         )
@@ -108,9 +109,7 @@ async def on_upload(file_path, assistant):
         f"Parsing {original_name}...",
     )
     t0 = time.perf_counter()
-    result = await assistant.ingest_pdf(
-        file_path, enrich=False, original_filename=original_name
-    )
+    result = await assistant.ingest_pdf(file_path, enrich=False, original_filename=original_name)
     elapsed = time.perf_counter() - t0
     doc_id = assistant.document_id
     url = _pdf_url(assistant, doc_id)
@@ -184,7 +183,14 @@ def on_save_annotation(set_id, question, answer, spans_json, assistant):
     if not set_id or assistant is None:
         return gr.update(), gr.update(), "Select a set first.", "", "", ""
     if not (question or "").strip() or not (answer or "").strip():
-        return gr.update(), gr.update(), "Question and answer required.", question, answer, spans_json
+        return (
+            gr.update(),
+            gr.update(),
+            "Question and answer required.",
+            question,
+            answer,
+            spans_json,
+        )
     try:
         raw = json.loads(spans_json or "[]")
     except json.JSONDecodeError:

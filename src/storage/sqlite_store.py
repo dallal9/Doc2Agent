@@ -603,9 +603,7 @@ class SQLiteStore:
 
     # -- Annotations --------------------------------------------------------
 
-    def create_annotation_set(
-        self, doc_id: str, label: str, description: str | None = None
-    ) -> str:
+    def create_annotation_set(self, doc_id: str, label: str, description: str | None = None) -> str:
         set_id = str(uuid.uuid4())
         self.conn.execute(
             "INSERT INTO annotation_sets (set_id, doc_id, label, description) VALUES (?, ?, ?, ?)",
@@ -632,9 +630,7 @@ class SQLiteStore:
         self.conn.commit()
         return result.rowcount > 0
 
-    def add_annotation(
-        self, set_id: str, question: str, answer: str, spans: list[Span]
-    ) -> str:
+    def add_annotation(self, set_id: str, question: str, answer: str, spans: list[Span]) -> str:
         annotation_id = str(uuid.uuid4())
         self.conn.execute(
             "INSERT INTO annotations (annotation_id, set_id, question, answer) VALUES (?, ?, ?, ?)",
