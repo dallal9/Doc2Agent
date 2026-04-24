@@ -617,6 +617,20 @@ class SQLiteStore:
         self.conn.commit()
         return result.rowcount
 
+    def delete_empty_chat_sessions(self, except_session_id: str | None = None) -> int:
+        """Delete chat sessions that have zero messages, optionally excluding one."""
+        sql = """
+            DELETE FROM chat_sessions
+            WHERE session_id NOT IN (SELECT DISTINCT session_id FROM chat_messages)
+        """
+        params: tuple = ()
+        if except_session_id:
+            sql += " AND session_id != ?"
+            params = (except_session_id,)
+        result = self.conn.execute(sql, params)
+        self.conn.commit()
+        return result.rowcount
+
     # -- Annotations --------------------------------------------------------
 
     def create_annotation_set(self, doc_id: str, label: str, description: str | None = None) -> str:

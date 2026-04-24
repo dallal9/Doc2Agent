@@ -275,3 +275,24 @@ def test_query_cache_operations():
         store.close()
     finally:
         Path(db_path).unlink(missing_ok=True)
+
+
+def test_delete_empty_chat_sessions_keeps_current_and_nonempty():
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+        db_path = f.name
+    try:
+        store = SQLiteStore(db_path)
+        current = store.create_chat_session(title="current")
+        keep = store.create_chat_session(title="has-msgs")
+        store.save_chat_message(session_id=keep, role="user", content="hi")
+        empty1 = store.create_chat_session(title="empty1")
+        empty2 = store.create_chat_session(title="empty2")
+
+        deleted = store.delete_empty_chat_sessions(except_session_id=current)
+        assert deleted == 2
+        ids = {s["session_id"] for s in store.list_chat_sessions()}
+        assert current in ids and keep in ids
+        assert empty1 not in ids and empty2 not in ids
+        store.close()
+    finally:
+        Path(db_path).unlink(missing_ok=True)

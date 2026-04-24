@@ -308,6 +308,16 @@ async def on_flush_all(assistant, history):
     return history, gr.update(choices=choices, value=None)
 
 
+async def on_clean_empty_sessions(assistant, session_id, history):
+    if assistant is None:
+        return history, gr.update()
+    count = assistant.store.delete_empty_chat_sessions(except_session_id=session_id)
+    history = history + [
+        {"role": "assistant", "content": f"Deleted {count} empty session(s)."}
+    ]
+    return history, gr.update(choices=_session_choices(assistant), value=session_id)
+
+
 async def on_detach(assistant):
     if assistant is None:
         return assistant, None, None, "No file attached."
@@ -448,7 +458,13 @@ def build_chat_tab():
             with gr.Row():
                 new_session_btn = gr.Button("New Session", size="sm")
                 clear_session_btn = gr.Button("Clear Session Messages", size="sm")
-            clear_all_sessions_btn = gr.Button("Clear All Sessions", variant="stop", size="sm")
+            with gr.Row():
+                clean_empty_sessions_btn = gr.Button(
+                    "Clean Empty Sessions (Except Current)", size="sm"
+                )
+                clear_all_sessions_btn = gr.Button(
+                    "Clear All Sessions", variant="stop", size="sm"
+                )
 
         # -- Chat area --
         with gr.Column(scale=3):
@@ -577,12 +593,34 @@ def build_chat_tab():
         inputs=[assistant_state, file_name_state],
         outputs=[assistant_state, session_id_state, chatbot, session_dropdown, status_md],
     )
+    clean_empty_sessions_btn.click(
+        fn=on_clean_empty_sessions,
+        inputs=[assistant_state, session_id_state, chatbot],
+        outputs=[chatbot, session_dropdown],
+    )
 
     return assistant_state, chatbot, doc_dropdown, status_md, session_id_state, session_dropdown
 
 
+def _build_homepage():
+    gr.Markdown(f"# {ASSISTANT_NAME}")
+    gr.Markdown(
+        "Use the navbar above (or the links below) to jump to a workspace."
+    )
+    gr.Markdown(
+        "- **[Chat](./chat)** — talk with your documents.\n"
+        "- **[Datasets](./datasets)** — turn live chat sessions into evaluation sets.\n"
+        "- **[Evaluate](./evaluate)** — annotate documents to build ground-truth Q&A."
+    )
+
+
 def create_app() -> gr.Blocks:
+    # Homepage (default route)
     with gr.Blocks(title=ASSISTANT_NAME) as demo:
+        _build_homepage()
+
+    # Chat page
+    with demo.route("Chat") as chat_page:
         with gr.Tabs():
             with gr.Tab("Chat with Documents"):
                 (
@@ -593,10 +631,7 @@ def create_app() -> gr.Blocks:
                     session_id_state,
                     session_dropdown,
                 ) = build_chat_tab()
-            with gr.Tab("Annotate"):
-                ann_doc_dd = build_annotation_tab(assistant_state)
-
-        demo.load(
+        chat_page.load(
             fn=on_app_load,
             outputs=[
                 assistant_state,
@@ -606,24 +641,20 @@ def create_app() -> gr.Blocks:
                 session_id_state,
                 session_dropdown,
             ],
-        ).then(
-            fn=on_tab_load,
-            inputs=[assistant_state],
-            outputs=[ann_doc_dd],
         )
 
-    # Datasets lives on its own page (Gradio 6 navbar route) to avoid the
-    # tab-render bug we hit when adding a third gr.Tab next to Annotate.
+    # Datasets page
     with demo.route("Datasets") as datasets_page:
-        (
-            ds_assistant_state,
-            ds_dataset_dd,
-            ds_session_dd,
-            ds_message_cb,
-            ds_preview_md,
-            ds_export_json,
-        ) = build_datasets_tab()
-
+        with gr.Tabs():
+            with gr.Tab("Live Chat Datasets"):
+                (
+                    ds_assistant_state,
+                    ds_dataset_dd,
+                    ds_session_dd,
+                    ds_message_cb,
+                    ds_preview_md,
+                    ds_export_json,
+                ) = build_datasets_tab()
         datasets_page.load(
             fn=on_datasets_tab_load,
             inputs=[ds_assistant_state],
@@ -635,6 +666,22 @@ def create_app() -> gr.Blocks:
                 ds_export_json,
                 ds_preview_md,
             ],
+        )
+
+    # Evaluate page (Annotate lives here)
+    with demo.route("Evaluate") as evaluate_page:
+        ev_assistant_state = gr.State(value=None)
+        with gr.Tabs():
+            with gr.Tab("Annotate Documents"):
+                ev_ann_doc_dd = build_annotation_tab(ev_assistant_state)
+        evaluate_page.load(
+            fn=lambda a: a or ChatAssistant(),
+            inputs=[ev_assistant_state],
+            outputs=[ev_assistant_state],
+        ).then(
+            fn=on_tab_load,
+            inputs=[ev_assistant_state],
+            outputs=[ev_ann_doc_dd],
         )
 
     return demo
