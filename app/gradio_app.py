@@ -8,7 +8,8 @@ from src.bootstrap import init_app
 init_app()
 
 from app.annotation_tab import annotator_head_script, build_annotation_tab, on_tab_load
-from app.datasets_tab import build_datasets_tab, on_tab_load as on_datasets_tab_load
+from app.datasets_tab import build_datasets_tab
+from app.datasets_tab import on_tab_load as on_datasets_tab_load
 from app.utils import ChatResult, render_chat_with_cache
 from src.agents import run_agent
 from src.chat import ChatAssistant
@@ -352,9 +353,7 @@ async def on_clean_empty_sessions(assistant, session_id, history):
     if assistant is None:
         return history, gr.update()
     count = assistant.store.delete_empty_chat_sessions(except_session_id=session_id)
-    history = history + [
-        {"role": "assistant", "content": f"Deleted {count} empty session(s)."}
-    ]
+    history = history + [{"role": "assistant", "content": f"Deleted {count} empty session(s)."}]
     return history, gr.update(choices=_session_choices(assistant), value=session_id)
 
 
@@ -476,9 +475,7 @@ def build_chat_tab():
                 clean_empty_sessions_btn = gr.Button(
                     "Clean Empty Sessions (Except Current)", size="sm"
                 )
-                clear_all_sessions_btn = gr.Button(
-                    "Clear All Sessions", variant="stop", size="sm"
-                )
+                clear_all_sessions_btn = gr.Button("Clear All Sessions", variant="stop", size="sm")
 
         # -- Chat area --
         with gr.Column(scale=3):
@@ -633,7 +630,7 @@ def _build_homepage():
         gr.Button("Datasets", link="./datasets", size="lg", scale=1)
         gr.Button("Evaluate", link="./evaluate", size="lg", scale=1)
     gr.Markdown(
-        "<div style=\"text-align:center; margin-top:0.5em; font-size:0.9em; opacity:0.8\">"
+        '<div style="text-align:center; margin-top:0.5em; font-size:0.9em; opacity:0.8">'
         "<strong>Chat</strong> — Q&amp;A with your PDFs. "
         "<strong>Datasets</strong> — sessions → evaluation sets. "
         "<strong>Evaluate</strong> — ground-truth Q&amp;A and spans."

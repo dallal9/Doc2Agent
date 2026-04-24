@@ -74,9 +74,7 @@ def test_export_auto_includes_all_turns_with_trace_and_reasoning_spans(assistant
     )
     ds_id = assistant.store.create_dataset(name="eval-1")
 
-    result = assistant.export_session_to_dataset(
-        session_id=sid, dataset_id=ds_id, mode="auto"
-    )
+    result = assistant.export_session_to_dataset(session_id=sid, dataset_id=ds_id, mode="auto")
     assert result == {"created": 1, "skipped_no_doc": 0}
 
     anns = assistant.store.list_dataset_annotations(ds_id)
@@ -94,9 +92,7 @@ def test_export_manual_only_picks_selected(assistant):
     sid = assistant.store.create_chat_session(title="t", doc_id="doc-x")
     assistant.store.save_chat_message(session_id=sid, role="user", content="Q1?")
     assistant.store.save_chat_message(session_id=sid, role="assistant", content="A1.")
-    msg_b = assistant.store.save_chat_message(
-        session_id=sid, role="user", content="Q2?"
-    )
+    msg_b = assistant.store.save_chat_message(session_id=sid, role="user", content="Q2?")
     assistant.store.save_chat_message(session_id=sid, role="assistant", content="A2.")
     ds_id = assistant.store.create_dataset(name="eval-2")
 
@@ -117,9 +113,7 @@ def test_export_skips_session_without_document(assistant):
     assistant.store.save_chat_message(session_id=sid, role="assistant", content="A.")
     ds_id = assistant.store.create_dataset(name="eval-3")
 
-    result = assistant.export_session_to_dataset(
-        session_id=sid, dataset_id=ds_id, mode="auto"
-    )
+    result = assistant.export_session_to_dataset(session_id=sid, dataset_id=ds_id, mode="auto")
     assert result == {"created": 0, "skipped_no_doc": 1}
     assert assistant.store.list_dataset_annotations(ds_id) == []
 

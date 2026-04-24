@@ -447,9 +447,7 @@ class ChatAssistant:
             for text in self._spans_from_trace(cached.get("traces_json") if cached else None):
                 spans.append(Span(kind="text", page_num=0, quoted_text=text))
             if reasoning:
-                spans.append(
-                    Span(kind="text", page_num=0, quoted_text=f"[reasoning]\n{reasoning}")
-                )
+                spans.append(Span(kind="text", page_num=0, quoted_text=f"[reasoning]\n{reasoning}"))
 
             annotation_id = self.store.add_annotation(set_id, question, answer, spans)
             self.store.add_annotation_to_dataset(dataset_id, annotation_id)
