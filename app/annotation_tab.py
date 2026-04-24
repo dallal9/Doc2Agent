@@ -351,7 +351,7 @@ def build_annotation_tab(assistant_state: gr.State):
     ).then(
         fn=None,
         inputs=[pdf_url_state],
-        js="(url) => { console.log('[d2a] upload.then loadPdf', url); if (window.doc2agent) window.doc2agent.loadPdf(url); }",
+        js="(url) => { console.log('[d2a] upload.then loadPdf', url); if (url && window.doc2agent) window.doc2agent.loadPdf(url); }",
     )
     refresh_btn.click(fn=on_refresh_docs, inputs=[assistant_state], outputs=[doc_dd])
 
@@ -362,7 +362,7 @@ def build_annotation_tab(assistant_state: gr.State):
     ).then(
         fn=None,
         inputs=[pdf_url_state],
-        js="(url) => { if (window.doc2agent) window.doc2agent.loadPdf(url); }",
+        js="(url) => { if (url && window.doc2agent) window.doc2agent.loadPdf(url); }",
     )
 
     new_set_btn.click(

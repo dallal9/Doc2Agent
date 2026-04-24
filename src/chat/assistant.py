@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
+import re
 import shutil
 from datetime import datetime
 from pathlib import Path
@@ -11,7 +13,7 @@ from src.agents import create_ingestion_agent, create_main_agent, ingest_page
 from src.agents.main import MainDeps
 from src.agents_config import load_agents_config, load_personal_info, load_prompts_config
 from src.logging import setup_logging
-from src.schemas import DocumentMetadata, DocumentSchema, StructuredDocument
+from src.schemas import DocumentMetadata, DocumentSchema, Span, StructuredDocument
 from src.storage import SQLiteStore
 from src.tools import (
     PDFParser,
@@ -334,3 +336,123 @@ class ChatAssistant:
         if not self.session_id:
             return None
         return self.store.get_chat_session(self.session_id)
+
+    # ------------------------------------------------------------------
+    # Dataset export from chat sessions (Milestone 2)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _spans_from_trace(traces_json: str | None) -> list[str]:
+        if not traces_json:
+            return []
+        try:
+            messages = json.loads(traces_json)
+        except (json.JSONDecodeError, TypeError):
+            return []
+        out: list[str] = []
+        seen: set[str] = set()
+        for msg in messages:
+            for p in msg.get("parts", []):
+                if p.get("part_kind") != "tool-return":
+                    continue
+                content = p.get("content")
+                if not content:
+                    continue
+                text = str(content).strip()
+                if not text or text in seen:
+                    continue
+                seen.add(text)
+                out.append(text)
+        return out
+
+    @staticmethod
+    def _extract_reasoning(content: str) -> str | None:
+        m = re.search(r"<think>(.*?)</think>", content or "", re.DOTALL)
+        return m.group(1).strip() if m else None
+
+    @staticmethod
+    def _strip_reasoning(content: str) -> str:
+        return re.sub(r"<think>.*?</think>", "", content or "", flags=re.DOTALL).strip()
+
+    def export_session_to_dataset(
+        self,
+        *,
+        session_id: str,
+        dataset_id: str,
+        mode: str = "auto",
+        selected_user_message_ids: list[str] | None = None,
+    ) -> dict:
+        """Export a chat session's turns as `Annotation`s into a dataset.
+
+        Modes:
+          - "auto": include every (user, assistant) turn pair.
+          - "manual": only include pairs whose user message_id is in
+            `selected_user_message_ids`.
+
+        For each pair we create an `Annotation` (Q + A) under a per-document
+        `annotation_set` labelled "chat:<session-prefix>", with `Span`s sourced
+        from the cached agent trace (tool-return content = retrieved evidence)
+        plus the assistant's `<think>` block (reasoning trace).
+
+        Returns {"created": N, "skipped_no_doc": M}. Turns from sessions with
+        no attached document are skipped because annotations are doc-scoped.
+        """
+        session = self.store.get_chat_session(session_id)
+        if not session:
+            return {"created": 0, "skipped_no_doc": 0}
+        doc_id = session.get("doc_id")
+        messages = self.store.get_chat_messages(session_id)
+        selected = set(selected_user_message_ids or [])
+        created = 0
+        skipped_no_doc = 0
+
+        set_id: str | None = None
+        if doc_id:
+            set_id = self.store.get_or_create_annotation_set(
+                doc_id,
+                f"chat:{session_id[:8]}",
+                f"Auto-exported from chat session {session_id}",
+            )
+
+        i = 0
+        while i < len(messages):
+            msg = messages[i]
+            if msg["role"] != "user":
+                i += 1
+                continue
+            assistant_msg = None
+            for j in range(i + 1, len(messages)):
+                if messages[j]["role"] == "assistant":
+                    assistant_msg = messages[j]
+                    break
+            if assistant_msg is None:
+                break
+
+            advance_to = messages.index(assistant_msg) + 1
+            if mode == "manual" and msg["message_id"] not in selected:
+                i = advance_to
+                continue
+            if set_id is None:
+                skipped_no_doc += 1
+                i = advance_to
+                continue
+
+            question = msg["content"]
+            raw_answer = assistant_msg["content"]
+            reasoning = self._extract_reasoning(raw_answer)
+            answer = self._strip_reasoning(raw_answer) or raw_answer
+
+            spans: list[Span] = []
+            cached = self.store.get_cached_query(doc_id, self._normalize_query(question))
+            for text in self._spans_from_trace(cached.get("traces_json") if cached else None):
+                spans.append(Span(kind="text", page_num=0, quoted_text=text))
+            if reasoning:
+                spans.append(
+                    Span(kind="text", page_num=0, quoted_text=f"[reasoning]\n{reasoning}")
+                )
+
+            annotation_id = self.store.add_annotation(set_id, question, answer, spans)
+            self.store.add_annotation_to_dataset(dataset_id, annotation_id)
+            created += 1
+            i = advance_to
+        return {"created": created, "skipped_no_doc": skipped_no_doc}

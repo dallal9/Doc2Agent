@@ -8,6 +8,7 @@ from src.bootstrap import init_app
 init_app()
 
 from app.annotation_tab import annotator_head_script, build_annotation_tab, on_tab_load
+from app.datasets_tab import build_datasets_tab, on_tab_load as on_datasets_tab_load
 from app.utils import ChatResult, render_chat_with_cache
 from src.agents import run_agent
 from src.chat import ChatAssistant
@@ -581,7 +582,7 @@ def build_chat_tab():
 
 
 def create_app() -> gr.Blocks:
-    with gr.Blocks(title=ASSISTANT_NAME, head=annotator_head_script()) as demo:
+    with gr.Blocks(title=ASSISTANT_NAME) as demo:
         with gr.Tabs():
             with gr.Tab("Chat with Documents"):
                 (
@@ -610,6 +611,32 @@ def create_app() -> gr.Blocks:
             inputs=[assistant_state],
             outputs=[ann_doc_dd],
         )
+
+    # Datasets lives on its own page (Gradio 6 navbar route) to avoid the
+    # tab-render bug we hit when adding a third gr.Tab next to Annotate.
+    with demo.route("Datasets") as datasets_page:
+        (
+            ds_assistant_state,
+            ds_dataset_dd,
+            ds_session_dd,
+            ds_message_cb,
+            ds_preview_md,
+            ds_export_json,
+        ) = build_datasets_tab()
+
+        datasets_page.load(
+            fn=on_datasets_tab_load,
+            inputs=[ds_assistant_state],
+            outputs=[
+                ds_assistant_state,
+                ds_dataset_dd,
+                ds_session_dd,
+                ds_message_cb,
+                ds_export_json,
+                ds_preview_md,
+            ],
+        )
+
     return demo
 
 
@@ -621,4 +648,5 @@ if __name__ == "__main__":
         server_port=7860,
         theme=gr.themes.Soft(),
         allowed_paths=[pdf_storage_dir],
+        head=annotator_head_script(),
     )

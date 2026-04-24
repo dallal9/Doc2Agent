@@ -137,6 +137,24 @@ CREATE TABLE IF NOT EXISTS annotation_spans (
 CREATE INDEX IF NOT EXISTS idx_annotation_sets_doc ON annotation_sets(doc_id);
 CREATE INDEX IF NOT EXISTS idx_annotations_set ON annotations(set_id);
 CREATE INDEX IF NOT EXISTS idx_spans_ann ON annotation_spans(annotation_id);
+
+CREATE TABLE IF NOT EXISTS datasets (
+    dataset_id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    description TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS dataset_annotations (
+    dataset_id TEXT NOT NULL,
+    annotation_id TEXT NOT NULL,
+    added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (dataset_id, annotation_id),
+    FOREIGN KEY (dataset_id) REFERENCES datasets(dataset_id) ON DELETE CASCADE,
+    FOREIGN KEY (annotation_id) REFERENCES annotations(annotation_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_datasets_created_at ON datasets(created_at DESC);
 """
 
 
@@ -177,8 +195,6 @@ class SQLiteStore:
             "evaluations",
             "metrics",
             "predictions",
-            "dataset_annotations",
-            "datasets",
             "annotation_documents",
         ]
         for name in legacy:
@@ -700,6 +716,86 @@ class SQLiteStore:
                 for a in annotations
             ],
         }
+
+    # -- Datasets (Milestone 2: live chat → evaluation data) ----------------
+
+    def create_dataset(self, *, name: str, description: str | None = None) -> str:
+        dataset_id = str(uuid.uuid4())
+        self.conn.execute(
+            "INSERT INTO datasets (dataset_id, name, description) VALUES (?, ?, ?)",
+            (dataset_id, name, description),
+        )
+        self.conn.commit()
+        return dataset_id
+
+    def list_datasets(self) -> list[dict]:
+        rows = self.conn.execute(
+            """
+            SELECT d.dataset_id, d.name, d.description, d.created_at,
+                   COUNT(da.annotation_id) AS annotation_count
+            FROM datasets d
+            LEFT JOIN dataset_annotations da ON da.dataset_id = d.dataset_id
+            GROUP BY d.dataset_id
+            ORDER BY d.created_at DESC
+            """
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_dataset(self, dataset_id: str) -> dict | None:
+        row = self.conn.execute(
+            "SELECT dataset_id, name, description, created_at FROM datasets WHERE dataset_id = ?",
+            (dataset_id,),
+        ).fetchone()
+        return dict(row) if row else None
+
+    def delete_dataset(self, dataset_id: str) -> bool:
+        result = self.conn.execute("DELETE FROM datasets WHERE dataset_id = ?", (dataset_id,))
+        self.conn.commit()
+        return result.rowcount > 0
+
+    def get_or_create_annotation_set(
+        self, doc_id: str, label: str, description: str | None = None
+    ) -> str:
+        row = self.conn.execute(
+            "SELECT set_id FROM annotation_sets WHERE doc_id = ? AND label = ?",
+            (doc_id, label),
+        ).fetchone()
+        if row:
+            return row["set_id"]
+        return self.create_annotation_set(doc_id, label, description)
+
+    def add_annotation_to_dataset(self, dataset_id: str, annotation_id: str) -> None:
+        self.conn.execute(
+            "INSERT OR IGNORE INTO dataset_annotations (dataset_id, annotation_id) VALUES (?, ?)",
+            (dataset_id, annotation_id),
+        )
+        self.conn.commit()
+
+    def list_dataset_annotations(self, dataset_id: str) -> list[dict]:
+        rows = self.conn.execute(
+            """
+            SELECT a.annotation_id, a.set_id, a.question, a.answer, a.created_at,
+                   s.doc_id, s.label AS set_label,
+                   d.file_name AS doc_name
+            FROM dataset_annotations da
+            JOIN annotations a ON a.annotation_id = da.annotation_id
+            JOIN annotation_sets s ON s.set_id = a.set_id
+            LEFT JOIN documents d ON d.doc_id = s.doc_id
+            WHERE da.dataset_id = ?
+            ORDER BY da.added_at ASC
+            """,
+            (dataset_id,),
+        ).fetchall()
+        result = []
+        for row in rows:
+            r = dict(row)
+            span_rows = self.conn.execute(
+                "SELECT span_id, kind, page_num, quoted_text FROM annotation_spans WHERE annotation_id = ? ORDER BY page_num",
+                (r["annotation_id"],),
+            ).fetchall()
+            r["spans"] = [dict(sr) for sr in span_rows]
+            result.append(r)
+        return result
 
     def close(self):
         self.conn.close()
