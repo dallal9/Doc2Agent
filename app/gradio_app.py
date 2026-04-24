@@ -23,6 +23,46 @@ ASSISTANT_NAME = os.getenv("ASSISTANT_NAME", "Doc2Agent")
 LOGO_DARK_PATH = "public/logo_dark.png"
 LOGO_LIGHT_PATH = "public/logo_light.png"
 
+_LOGO_THEME_STYLE = """
+<style>
+    .logo-dark { display: none; }
+    .dark .logo-dark { display: block; }
+    .dark .logo-light { display: none; }
+    .doc2agent-hero-logo { max-width: 360px; margin: 0 auto; }
+</style>
+"""
+
+
+def _doc2agent_logo_imgs() -> None:
+    gr.Image(
+        value=LOGO_LIGHT_PATH,
+        show_label=False,
+        container=False,
+        interactive=False,
+        buttons=[],
+        elem_classes="doc2agent-logo logo-light",
+        width="100%",
+    )
+    gr.Image(
+        value=LOGO_DARK_PATH,
+        show_label=False,
+        container=False,
+        interactive=False,
+        buttons=[],
+        elem_classes="doc2agent-logo logo-dark",
+        width="100%",
+    )
+
+
+def _doc2agent_logo_block(*, hero: bool = False) -> None:
+    """Light/dark theme-aware logos; use hero=True on the landing page for a centered max width."""
+    gr.HTML(_LOGO_THEME_STYLE)
+    if hero:
+        with gr.Column(elem_classes="doc2agent-hero-logo"):
+            _doc2agent_logo_imgs()
+    else:
+        _doc2agent_logo_imgs()
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -409,37 +449,11 @@ def build_chat_tab():
     file_name_state = gr.State(value=None)
     file_path_state = gr.State(value=None)
     session_id_state = gr.State(value=None)
-    gr.HTML(
-        """
-        <style>
-            .logo-dark { display: none; }
-            .dark .logo-dark { display: block; }
-            .dark .logo-light { display: none; }
-        </style>
-        """
-    )
 
     with gr.Row():
         # -- Sidebar --
         with gr.Column(scale=1, min_width=260):
-            gr.Image(
-                value=LOGO_LIGHT_PATH,
-                show_label=False,
-                container=False,
-                interactive=False,
-                buttons=[],
-                elem_classes="doc2agent-logo logo-light",
-                width="100%",
-            )
-            gr.Image(
-                value=LOGO_DARK_PATH,
-                show_label=False,
-                container=False,
-                interactive=False,
-                buttons=[],
-                elem_classes="doc2agent-logo logo-dark",
-                width="100%",
-            )
+            _doc2agent_logo_block(hero=False)
             gr.Markdown(f"### {ASSISTANT_NAME}")
             file_upload = gr.File(label="Upload PDF", file_types=[".pdf"], type="filepath")
             status_md = gr.Markdown("No file attached.")
@@ -603,14 +617,27 @@ def build_chat_tab():
 
 
 def _build_homepage():
-    gr.Markdown(f"# {ASSISTANT_NAME}")
+    _doc2agent_logo_block(hero=True)
     gr.Markdown(
-        "Use the navbar above (or the links below) to jump to a workspace."
+        f'<div style="text-align:center">'
+        f"<h1>{ASSISTANT_NAME}</h1>"
+        "<p>Intelligent PDF assistant with a multi-agent architecture — local-first, "
+        "privacy-preserving Q&A over your documents.</p></div>"
     )
     gr.Markdown(
-        "- **[Chat](./chat)** — talk with your documents.\n"
-        "- **[Datasets](./datasets)** — turn live chat sessions into evaluation sets.\n"
-        "- **[Evaluate](./evaluate)** — annotate documents to build ground-truth Q&A."
+        '<p style="text-align:center; opacity:0.85; font-size:0.95em">'
+        "Use the top bar or the buttons below to open a workspace.</p>"
+    )
+    with gr.Row():
+        gr.Button("Chat", link="./chat", variant="primary", size="lg", scale=1)
+        gr.Button("Datasets", link="./datasets", size="lg", scale=1)
+        gr.Button("Evaluate", link="./evaluate", size="lg", scale=1)
+    gr.Markdown(
+        "<div style=\"text-align:center; margin-top:0.5em; font-size:0.9em; opacity:0.8\">"
+        "<strong>Chat</strong> — Q&amp;A with your PDFs. "
+        "<strong>Datasets</strong> — sessions → evaluation sets. "
+        "<strong>Evaluate</strong> — ground-truth Q&amp;A and spans."
+        "</div>"
     )
 
 
