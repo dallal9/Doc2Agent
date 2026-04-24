@@ -212,8 +212,9 @@ def on_dataset_change(dataset_id, assistant):
 # ---- UI -------------------------------------------------------------------
 
 
-def build_datasets_tab():
-    assistant_state = gr.State(value=None)
+def build_datasets_tab(assistant_state: gr.State | None = None):
+    if assistant_state is None:
+        assistant_state = gr.State(value=None)
     gr.Markdown("## Datasets — build evaluation sets from live chat sessions")
 
     with gr.Row():

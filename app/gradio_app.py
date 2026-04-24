@@ -628,12 +628,11 @@ def _build_homepage():
     with gr.Row():
         gr.Button("Chat", link="./chat", variant="primary", size="lg", scale=1)
         gr.Button("Datasets", link="./datasets", size="lg", scale=1)
-        gr.Button("Evaluate", link="./evaluate", size="lg", scale=1)
     gr.Markdown(
         '<div style="text-align:center; margin-top:0.5em; font-size:0.9em; opacity:0.8">'
         "<strong>Chat</strong> — Q&amp;A with your PDFs. "
-        "<strong>Datasets</strong> — sessions → evaluation sets. "
-        "<strong>Evaluate</strong> — ground-truth Q&amp;A and spans."
+        "<strong>Datasets</strong> — build evaluation sets from live chat sessions "
+        "or from manually annotated documents."
         "</div>"
     )
 
@@ -667,18 +666,22 @@ def create_app() -> gr.Blocks:
             ],
         )
 
-    # Datasets page
+    # Datasets page — two tabs sharing one assistant_state
     with demo.route("Datasets") as datasets_page:
+        ds_assistant_state = gr.State(value=None)
         with gr.Tabs():
             with gr.Tab("Live Chat Datasets"):
                 (
-                    ds_assistant_state,
+                    _,
                     ds_dataset_dd,
                     ds_session_dd,
                     ds_message_cb,
                     ds_preview_md,
                     ds_export_json,
-                ) = build_datasets_tab()
+                ) = build_datasets_tab(ds_assistant_state)
+            with gr.Tab("Annotate Documents"):
+                ev_ann_doc_dd, ev_dataset_dd = build_annotation_tab(ds_assistant_state)
+
         datasets_page.load(
             fn=on_datasets_tab_load,
             inputs=[ds_assistant_state],
@@ -690,25 +693,26 @@ def create_app() -> gr.Blocks:
                 ds_export_json,
                 ds_preview_md,
             ],
-        )
-
-    # Evaluate page (Annotate lives here)
-    with demo.route("Evaluate") as evaluate_page:
-        ev_assistant_state = gr.State(value=None)
-        with gr.Tabs():
-            with gr.Tab("Annotate Documents"):
-                ev_ann_doc_dd = build_annotation_tab(ev_assistant_state)
-        evaluate_page.load(
-            fn=lambda a: a or ChatAssistant(),
-            inputs=[ev_assistant_state],
-            outputs=[ev_assistant_state],
         ).then(
             fn=on_tab_load,
-            inputs=[ev_assistant_state],
+            inputs=[ds_assistant_state],
             outputs=[ev_ann_doc_dd],
+        ).then(
+            fn=lambda a: gr.update(choices=_annotate_dataset_choices(a)),
+            inputs=[ds_assistant_state],
+            outputs=[ev_dataset_dd],
         )
 
     return demo
+
+
+def _annotate_dataset_choices(assistant):
+    if assistant is None:
+        return []
+    return [
+        (f"{d['name']} ({d['annotation_count']} items)", d["dataset_id"])
+        for d in assistant.store.list_datasets()
+    ]
 
 
 if __name__ == "__main__":

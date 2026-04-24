@@ -268,6 +268,48 @@ def on_refresh_docs(assistant):
     return gr.update(choices=_doc_choices(assistant))
 
 
+def _dataset_choices(assistant: ChatAssistant | None) -> list[tuple[str, str]]:
+    if assistant is None:
+        return []
+    return [
+        (f"{d['name']} ({d['annotation_count']} items)", d["dataset_id"])
+        for d in assistant.store.list_datasets()
+    ]
+
+
+def on_refresh_datasets(assistant):
+    return gr.update(choices=_dataset_choices(assistant))
+
+
+def on_create_and_add_dataset(set_id, new_dataset_name, assistant):
+    if assistant is None or not set_id:
+        return gr.update(), "Select an annotation set first.", new_dataset_name
+    name = (new_dataset_name or "").strip()
+    if not name:
+        return gr.update(), "Enter a name for the new dataset.", new_dataset_name
+    dataset_id = assistant.store.create_dataset(name=name)
+    count = assistant.store.add_annotation_set_to_dataset(dataset_id, set_id)
+    logger.info("created dataset %s and linked %d annotations from set %s", dataset_id, count, set_id)
+    return (
+        gr.update(choices=_dataset_choices(assistant), value=dataset_id),
+        f"Created dataset **{name}** and added {count} annotation(s).",
+        "",
+    )
+
+
+def on_add_set_to_dataset(set_id, dataset_id, assistant):
+    if assistant is None or not set_id:
+        return gr.update(), "Select an annotation set first."
+    if not dataset_id:
+        return gr.update(), "Select a target dataset."
+    count = assistant.store.add_annotation_set_to_dataset(dataset_id, set_id)
+    logger.info("linked %d annotations from set %s to dataset %s", count, set_id, dataset_id)
+    return (
+        gr.update(choices=_dataset_choices(assistant), value=dataset_id),
+        f"Added {count} annotation(s) to dataset.",
+    )
+
+
 # ---- UI -------------------------------------------------------------------
 
 
@@ -294,6 +336,16 @@ def build_annotation_tab(assistant_state: gr.State):
             export_btn = gr.Button("Export JSON", size="sm", variant="primary")
             export_file = gr.File(label="Download", interactive=False)
             status_md = gr.Markdown("")
+
+            gr.Markdown("### Add to dataset")
+            dataset_dd = gr.Dropdown(label="Target dataset", choices=[], interactive=True)
+            with gr.Row():
+                refresh_datasets_btn = gr.Button("Refresh", size="sm")
+                add_to_dataset_btn = gr.Button("Add set → dataset", variant="primary", size="sm")
+            new_dataset_name = gr.Textbox(
+                label="Or create new dataset", placeholder="name for a new dataset"
+            )
+            create_and_add_btn = gr.Button("Create & add set", size="sm")
 
         with gr.Column(scale=3):
             gr.HTML('<div id="d2a-viewer">Upload or pick a PDF to begin.</div>')
@@ -398,4 +450,20 @@ def build_annotation_tab(assistant_state: gr.State):
         outputs=[export_file, status_md],
     )
 
-    return doc_dd
+    refresh_datasets_btn.click(
+        fn=on_refresh_datasets,
+        inputs=[assistant_state],
+        outputs=[dataset_dd],
+    )
+    add_to_dataset_btn.click(
+        fn=on_add_set_to_dataset,
+        inputs=[set_dd, dataset_dd, assistant_state],
+        outputs=[dataset_dd, status_md],
+    )
+    create_and_add_btn.click(
+        fn=on_create_and_add_dataset,
+        inputs=[set_dd, new_dataset_name, assistant_state],
+        outputs=[dataset_dd, status_md, new_dataset_name],
+    )
+
+    return doc_dd, dataset_dd

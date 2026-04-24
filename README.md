@@ -26,8 +26,7 @@ Doc2Agent transforms static PDF documents into interactive knowledge bases. Usin
 - File-based configuration (agents/models/backends and prompts)
 - **Multi-page UI** with a navbar:
   - **Chat** — Q&A with the agents (with a one-click "clean empty sessions" button)
-  - **Datasets** — turn live chat sessions into evaluation datasets
-  - **Evaluate** — annotate documents to build ground-truth Q&A (PDF.js viewer, span staging, JSON export)
+  - **Datasets** — two tabs: *Live Chat Datasets* (turn chat sessions into eval sets) and *Annotate Documents* (PDF.js viewer + span staging + push annotation sets into a dataset)
 
 ---
 
@@ -62,10 +61,9 @@ cp env.example .env
 make run
 ```
 
-5. **Access the web UI** (typically `http://localhost:7860`). The homepage links to the three workspaces via the top navbar:
+5. **Access the web UI** (typically `http://localhost:7860`). The homepage links to the two workspaces via the top navbar:
    - **Chat** (`/chat`) — Q&A with the agents
-   - **Datasets** (`/datasets`) — build evaluation datasets from live chat sessions
-   - **Evaluate** (`/evaluate`) — annotate documents (Q&A + evidence spans)
+   - **Datasets** (`/datasets`) — two tabs: build datasets from live chat sessions or from manually annotated documents
 
 ---
 
@@ -96,9 +94,10 @@ make run
 ### User Interface
 
 - **Gradio multi-page app** with a navbar:
-  - **Chat** page (single tab): upload, agents, cache, sessions. Includes a **Clean Empty Sessions (Except Current)** button to prune sessions with zero messages.
-  - **Datasets** page (`Live Chat Datasets` tab): pick a chat session, choose Auto/Manual, export turns as `Annotation`s into a `Dataset`. One dataset can aggregate multiple sessions.
-  - **Evaluate** page (`Annotate Documents` tab): PDF.js viewer, span staging (text or page-based), Q&A capture, JSON export.
+  - **Chat** page: upload, agents, cache, sessions. Includes **Clean Empty Sessions (Except Current)** to prune empty sessions in one click.
+  - **Datasets** page:
+    - *Live Chat Datasets* tab: pick a chat session, choose Auto/Manual, export turns as `Annotation`s into a `Dataset`. One dataset can aggregate multiple sessions.
+    - *Annotate Documents* tab: PDF.js viewer + span staging (text / page-based), Q&A capture, JSON export. Push the whole annotation set into an existing or new dataset — stored the same way as chat-exported ones (annotations + spans + doc reference in SQLite).
 - **Document upload**: PDF upload with progress tracking (chat may enrich pages; Annotate parses only)
 - **Document selection**: Switch between multiple cached documents
 - **Query history**: View and manage cached queries per document
@@ -122,7 +121,7 @@ make run
 ```mermaid
 flowchart TB
     subgraph UI[User Interface]
-        GR[Gradio — Chat / Datasets / Evaluate pages]
+        GR[Gradio — Chat / Datasets pages]
     end
 
     subgraph Ingestion[PDF Ingestion Pipeline]
@@ -231,7 +230,7 @@ For detailed architecture documentation, see [docs/architecture.md](docs/archite
 
 ## Tech Stack
 
-- **UI Framework**: [Gradio](https://github.com/gradio-app/gradio) — multi-page app (Chat / Datasets / Evaluate) with client-side PDF rendering via PDF.js
+- **UI Framework**: [Gradio](https://github.com/gradio-app/gradio) — multi-page app (Chat / Datasets) with client-side PDF rendering via PDF.js
 - **Agent Framework**: [pydantic-ai](https://github.com/pydantic/pydantic-ai) - Type-safe AI agents
 - **LLM Backend**: [Ollama](https://ollama.com/) - Local LLM inference
 - **PDF Processing**: [PyMuPDF (fitz)](https://pymupdf.readthedocs.io/) - High-performance PDF parsing
@@ -246,8 +245,8 @@ For detailed architecture documentation, see [docs/architecture.md](docs/archite
 ```
 Doc2Agent/
 ├── app/
-│   ├── gradio_app.py             # Gradio UI entry point (homepage + Chat/Datasets/Evaluate routes)
-│   ├── annotation_tab.py         # Annotate Documents tab (lives on the Evaluate page)
+│   ├── gradio_app.py             # Gradio UI entry point (homepage + Chat/Datasets routes)
+│   ├── annotation_tab.py         # Annotate Documents tab (lives on the Datasets page)
 │   ├── datasets_tab.py           # Live Chat Datasets tab (lives on the Datasets page)
 │   ├── static/annotator.js       # PDF.js viewer + span bridge
 │   └── utils.py                  # UI utilities (framework-agnostic)
@@ -332,17 +331,17 @@ The project uses `uv` for dependency management. Key commands:
    - Click "Load" to switch to a cached document
    - Click "Delete" to remove a document, or "Flush Cache" to clear cached queries
 
-### Evaluate page (Annotate Documents)
+### Datasets page
 
-Open **Evaluate** from the navbar, pick or upload a PDF, create/select an **annotation set**, stage spans (text selection or page), enter Q&A, **Save**, then **Export JSON** if needed.
+Open **Datasets** from the navbar.
 
-### Datasets page (Live Chat Datasets)
-
-Open **Datasets** from the navbar. Create a dataset (name + description), then pick a chat session and choose a mode:
+**Live Chat Datasets** tab — create a dataset, pick a chat session, choose:
 - **Auto** — exports every (user, assistant) turn as an `Annotation` (with retrieved context + reasoning trace as evidence spans).
 - **Manual** — pick the specific user messages to include.
 
 A single dataset can aggregate turns from multiple sessions. The preview pane shows current contents and offers a JSON export.
+
+**Annotate Documents** tab — pick or upload a PDF, create/select an **annotation set**, stage spans (text selection or page), enter Q&A, **Save**. Then, in the same tab's sidebar, either select an existing dataset and click **Add set → dataset**, or type a name under **Or create new dataset** and click **Create & add set**. Annotations + spans + the doc reference are stored alongside chat-exported ones.
 
 ### Advanced Features
 

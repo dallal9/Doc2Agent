@@ -785,6 +785,20 @@ class SQLiteStore:
         )
         self.conn.commit()
 
+    def add_annotation_set_to_dataset(self, dataset_id: str, set_id: str) -> int:
+        """Link every annotation in a set to a dataset. Returns the count added
+        (existing links are kept; duplicates are ignored)."""
+        rows = self.conn.execute(
+            "SELECT annotation_id FROM annotations WHERE set_id = ?", (set_id,)
+        ).fetchall()
+        for r in rows:
+            self.conn.execute(
+                "INSERT OR IGNORE INTO dataset_annotations (dataset_id, annotation_id) VALUES (?, ?)",
+                (dataset_id, r["annotation_id"]),
+            )
+        self.conn.commit()
+        return len(rows)
+
     def list_dataset_annotations(self, dataset_id: str) -> list[dict]:
         rows = self.conn.execute(
             """

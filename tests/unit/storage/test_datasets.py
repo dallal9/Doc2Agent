@@ -106,6 +106,28 @@ def test_delete_dataset_keeps_underlying_annotation():
         Path(path).unlink(missing_ok=True)
 
 
+def test_add_annotation_set_to_dataset_links_all():
+    store, path = _store()
+    try:
+        _seed_doc(store)
+        set_id = store.get_or_create_annotation_set("doc-x", "manual:v1")
+        a1 = store.add_annotation(set_id, "Q1?", "A1.", [])
+        a2 = store.add_annotation(set_id, "Q2?", "A2.", [])
+        ds_id = store.create_dataset(name="from-annotations")
+
+        count = store.add_annotation_set_to_dataset(ds_id, set_id)
+        assert count == 2
+        linked = {a["annotation_id"] for a in store.list_dataset_annotations(ds_id)}
+        assert linked == {a1, a2}
+
+        # idempotent — re-run doesn't duplicate rows
+        store.add_annotation_set_to_dataset(ds_id, set_id)
+        assert len(store.list_dataset_annotations(ds_id)) == 2
+    finally:
+        store.close()
+        Path(path).unlink(missing_ok=True)
+
+
 def test_datasets_persist_across_store_init():
     """Regression: legacy-drop list must NOT include datasets/dataset_annotations."""
     f = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
