@@ -137,6 +137,100 @@ CREATE TABLE IF NOT EXISTS annotation_spans (
 CREATE INDEX IF NOT EXISTS idx_annotation_sets_doc ON annotation_sets(doc_id);
 CREATE INDEX IF NOT EXISTS idx_annotations_set ON annotations(set_id);
 CREATE INDEX IF NOT EXISTS idx_spans_ann ON annotation_spans(annotation_id);
+
+CREATE TABLE IF NOT EXISTS datasets (
+    dataset_id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    description TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS dataset_annotations (
+    dataset_id TEXT NOT NULL,
+    annotation_id TEXT NOT NULL,
+    added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (dataset_id, annotation_id),
+    FOREIGN KEY (dataset_id) REFERENCES datasets(dataset_id) ON DELETE CASCADE,
+    FOREIGN KEY (annotation_id) REFERENCES annotations(annotation_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_datasets_created_at ON datasets(created_at DESC);
+
+CREATE TABLE IF NOT EXISTS evaluation_runs (
+    run_id TEXT PRIMARY KEY,
+    dataset_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    label TEXT,
+    description TEXT,
+    status TEXT NOT NULL DEFAULT 'pending',
+    agent_config_json TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    completed_at TIMESTAMP,
+    FOREIGN KEY (dataset_id) REFERENCES datasets(dataset_id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS evaluation_predictions (
+    prediction_id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    dataset_id TEXT NOT NULL,
+    annotation_id TEXT NOT NULL,
+    agent_answer TEXT,
+    agent_thoughts TEXT,
+    document_reference TEXT,
+    context_used TEXT,
+    status TEXT NOT NULL DEFAULT 'success',
+    error_message TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (run_id) REFERENCES evaluation_runs(run_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_eval_runs_dataset ON evaluation_runs(dataset_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_eval_preds_run ON evaluation_predictions(run_id);
+
+CREATE TABLE IF NOT EXISTS metrics (
+    metric_id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    type TEXT NOT NULL CHECK(type IN ('bool','int','float')),
+    aggregation TEXT NOT NULL CHECK(aggregation IN ('avg','sum','min','max')),
+    judge_prompt TEXT,
+    metadata_json TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS judge_runs (
+    judge_run_id TEXT PRIMARY KEY,
+    evaluation_run_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    judge_type TEXT NOT NULL CHECK(judge_type IN ('manual','llm')),
+    metric_ids_json TEXT NOT NULL DEFAULT '[]',
+    status TEXT NOT NULL DEFAULT 'pending',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    completed_at TIMESTAMP,
+    FOREIGN KEY (evaluation_run_id) REFERENCES evaluation_runs(run_id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS evaluation_results (
+    result_id TEXT PRIMARY KEY,
+    judge_run_id TEXT NOT NULL,
+    evaluation_run_id TEXT NOT NULL,
+    prediction_id TEXT NOT NULL,
+    annotation_id TEXT NOT NULL,
+    metric_id TEXT NOT NULL,
+    score REAL NOT NULL,
+    judge_type TEXT NOT NULL CHECK(judge_type IN ('manual','llm')),
+    comment TEXT,
+    judge_reasoning TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(judge_run_id, prediction_id, metric_id),
+    FOREIGN KEY (judge_run_id) REFERENCES judge_runs(judge_run_id) ON DELETE CASCADE,
+    FOREIGN KEY (prediction_id) REFERENCES evaluation_predictions(prediction_id) ON DELETE CASCADE,
+    FOREIGN KEY (metric_id) REFERENCES metrics(metric_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_judge_runs_eval ON judge_runs(evaluation_run_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_eval_results_judge ON evaluation_results(judge_run_id);
+CREATE INDEX IF NOT EXISTS idx_eval_results_pred ON evaluation_results(prediction_id);
 """
 
 
@@ -171,14 +265,11 @@ class SQLiteStore:
                 "quoted_text",
             },
         }
-        # Always-drop legacy tables (never used by current code)
+        # Always-drop legacy tables (never used by current code).
+        # `metrics` / `evaluation_results` are now owned by Milestone 4 and must NOT be dropped.
         legacy = [
-            "evaluation_results",
             "evaluations",
-            "metrics",
             "predictions",
-            "dataset_annotations",
-            "datasets",
             "annotation_documents",
         ]
         for name in legacy:
@@ -203,6 +294,11 @@ class SQLiteStore:
             self.conn.execute("ALTER TABLE documents ADD COLUMN file_mod_time REAL")
         if "file_hash" not in columns:
             self.conn.execute("ALTER TABLE documents ADD COLUMN file_hash TEXT")
+
+        cur = self.conn.execute("PRAGMA table_info(evaluation_runs)")
+        eval_cols = {row[1] for row in cur.fetchall()}
+        if eval_cols and "label" not in eval_cols:
+            self.conn.execute("ALTER TABLE evaluation_runs ADD COLUMN label TEXT")
 
         # Create query_cache table if it doesn't exist
         cur = self.conn.execute(
@@ -601,6 +697,20 @@ class SQLiteStore:
         self.conn.commit()
         return result.rowcount
 
+    def delete_empty_chat_sessions(self, except_session_id: str | None = None) -> int:
+        """Delete chat sessions that have zero messages, optionally excluding one."""
+        sql = """
+            DELETE FROM chat_sessions
+            WHERE session_id NOT IN (SELECT DISTINCT session_id FROM chat_messages)
+        """
+        params: tuple = ()
+        if except_session_id:
+            sql += " AND session_id != ?"
+            params = (except_session_id,)
+        result = self.conn.execute(sql, params)
+        self.conn.commit()
+        return result.rowcount
+
     # -- Annotations --------------------------------------------------------
 
     def create_annotation_set(self, doc_id: str, label: str, description: str | None = None) -> str:
@@ -700,6 +810,546 @@ class SQLiteStore:
                 for a in annotations
             ],
         }
+
+    # -- Datasets (Milestone 2: live chat → evaluation data) ----------------
+
+    def create_dataset(self, *, name: str, description: str | None = None) -> str:
+        dataset_id = str(uuid.uuid4())
+        self.conn.execute(
+            "INSERT INTO datasets (dataset_id, name, description) VALUES (?, ?, ?)",
+            (dataset_id, name, description),
+        )
+        self.conn.commit()
+        return dataset_id
+
+    def list_datasets(self) -> list[dict]:
+        rows = self.conn.execute(
+            """
+            SELECT d.dataset_id, d.name, d.description, d.created_at,
+                   COUNT(da.annotation_id) AS annotation_count
+            FROM datasets d
+            LEFT JOIN dataset_annotations da ON da.dataset_id = d.dataset_id
+            GROUP BY d.dataset_id
+            ORDER BY d.created_at DESC
+            """
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_dataset(self, dataset_id: str) -> dict | None:
+        row = self.conn.execute(
+            "SELECT dataset_id, name, description, created_at FROM datasets WHERE dataset_id = ?",
+            (dataset_id,),
+        ).fetchone()
+        return dict(row) if row else None
+
+    def delete_dataset(self, dataset_id: str) -> bool:
+        result = self.conn.execute("DELETE FROM datasets WHERE dataset_id = ?", (dataset_id,))
+        self.conn.commit()
+        return result.rowcount > 0
+
+    def get_or_create_annotation_set(
+        self, doc_id: str, label: str, description: str | None = None
+    ) -> str:
+        row = self.conn.execute(
+            "SELECT set_id FROM annotation_sets WHERE doc_id = ? AND label = ?",
+            (doc_id, label),
+        ).fetchone()
+        if row:
+            return row["set_id"]
+        return self.create_annotation_set(doc_id, label, description)
+
+    def add_annotation_to_dataset(self, dataset_id: str, annotation_id: str) -> None:
+        self.conn.execute(
+            "INSERT OR IGNORE INTO dataset_annotations (dataset_id, annotation_id) VALUES (?, ?)",
+            (dataset_id, annotation_id),
+        )
+        self.conn.commit()
+
+    def add_annotation_set_to_dataset(self, dataset_id: str, set_id: str) -> int:
+        """Link every annotation in a set to a dataset. Returns the count added
+        (existing links are kept; duplicates are ignored)."""
+        rows = self.conn.execute(
+            "SELECT annotation_id FROM annotations WHERE set_id = ?", (set_id,)
+        ).fetchall()
+        for r in rows:
+            self.conn.execute(
+                "INSERT OR IGNORE INTO dataset_annotations (dataset_id, annotation_id) VALUES (?, ?)",
+                (dataset_id, r["annotation_id"]),
+            )
+        self.conn.commit()
+        return len(rows)
+
+    def list_dataset_annotations(self, dataset_id: str) -> list[dict]:
+        rows = self.conn.execute(
+            """
+            SELECT a.annotation_id, a.set_id, a.question, a.answer, a.created_at,
+                   s.doc_id, s.label AS set_label,
+                   d.file_name AS doc_name
+            FROM dataset_annotations da
+            JOIN annotations a ON a.annotation_id = da.annotation_id
+            JOIN annotation_sets s ON s.set_id = a.set_id
+            LEFT JOIN documents d ON d.doc_id = s.doc_id
+            WHERE da.dataset_id = ?
+            ORDER BY da.added_at ASC
+            """,
+            (dataset_id,),
+        ).fetchall()
+        result = []
+        for row in rows:
+            r = dict(row)
+            span_rows = self.conn.execute(
+                "SELECT span_id, kind, page_num, quoted_text FROM annotation_spans WHERE annotation_id = ? ORDER BY page_num",
+                (r["annotation_id"],),
+            ).fetchall()
+            r["spans"] = [dict(sr) for sr in span_rows]
+            result.append(r)
+        return result
+
+    # -- Evaluation runs (Milestone 3) -------------------------------------
+
+    def create_evaluation_run(
+        self,
+        *,
+        dataset_id: str,
+        name: str,
+        label: str | None = None,
+        description: str | None = None,
+        agent_config: dict | None = None,
+    ) -> str:
+        run_id = str(uuid.uuid4())
+        self.conn.execute(
+            """INSERT INTO evaluation_runs
+               (run_id, dataset_id, name, label, description, status, agent_config_json)
+               VALUES (?, ?, ?, ?, ?, 'pending', ?)""",
+            (run_id, dataset_id, name, label, description, json.dumps(agent_config or {})),
+        )
+        self.conn.commit()
+        return run_id
+
+    def update_run_status(self, run_id: str, status: str, *, completed: bool = False) -> None:
+        if completed:
+            self.conn.execute(
+                "UPDATE evaluation_runs SET status = ?, completed_at = ? WHERE run_id = ?",
+                (status, datetime.utcnow().isoformat(), run_id),
+            )
+        else:
+            self.conn.execute(
+                "UPDATE evaluation_runs SET status = ? WHERE run_id = ?",
+                (status, run_id),
+            )
+        self.conn.commit()
+
+    def get_evaluation_run(self, run_id: str) -> dict | None:
+        row = self.conn.execute(
+            "SELECT * FROM evaluation_runs WHERE run_id = ?", (run_id,)
+        ).fetchone()
+        return dict(row) if row else None
+
+    def list_evaluation_runs(self, dataset_id: str | None = None) -> list[dict]:
+        if dataset_id:
+            rows = self.conn.execute(
+                """SELECT r.*, d.name AS dataset_name,
+                          COUNT(p.prediction_id) AS prediction_count
+                   FROM evaluation_runs r
+                   LEFT JOIN datasets d ON d.dataset_id = r.dataset_id
+                   LEFT JOIN evaluation_predictions p ON p.run_id = r.run_id
+                   WHERE r.dataset_id = ?
+                   GROUP BY r.run_id
+                   ORDER BY r.created_at DESC""",
+                (dataset_id,),
+            ).fetchall()
+        else:
+            rows = self.conn.execute(
+                """SELECT r.*, d.name AS dataset_name,
+                          COUNT(p.prediction_id) AS prediction_count
+                   FROM evaluation_runs r
+                   LEFT JOIN datasets d ON d.dataset_id = r.dataset_id
+                   LEFT JOIN evaluation_predictions p ON p.run_id = r.run_id
+                   GROUP BY r.run_id
+                   ORDER BY r.created_at DESC"""
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def delete_evaluation_run(self, run_id: str) -> bool:
+        result = self.conn.execute("DELETE FROM evaluation_runs WHERE run_id = ?", (run_id,))
+        self.conn.commit()
+        return result.rowcount > 0
+
+    def save_prediction(
+        self,
+        *,
+        run_id: str,
+        dataset_id: str,
+        annotation_id: str,
+        agent_answer: str | None,
+        agent_thoughts: str | None,
+        document_reference: str | None,
+        context_used: str | None,
+        status: str,
+        error_message: str | None,
+    ) -> str:
+        prediction_id = str(uuid.uuid4())
+        self.conn.execute(
+            """INSERT INTO evaluation_predictions
+               (prediction_id, run_id, dataset_id, annotation_id, agent_answer,
+                agent_thoughts, document_reference, context_used, status, error_message)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                prediction_id,
+                run_id,
+                dataset_id,
+                annotation_id,
+                agent_answer,
+                agent_thoughts,
+                document_reference,
+                context_used,
+                status,
+                error_message,
+            ),
+        )
+        self.conn.commit()
+        return prediction_id
+
+    def list_predictions(self, run_id: str) -> list[dict]:
+        rows = self.conn.execute(
+            """SELECT p.*, a.question, a.answer AS expected_answer,
+                      s.doc_id, d.file_name AS doc_name
+               FROM evaluation_predictions p
+               LEFT JOIN annotations a ON a.annotation_id = p.annotation_id
+               LEFT JOIN annotation_sets s ON s.set_id = a.set_id
+               LEFT JOIN documents d ON d.doc_id = s.doc_id
+               WHERE p.run_id = ?
+               ORDER BY p.created_at ASC""",
+            (run_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_prediction(self, prediction_id: str) -> dict | None:
+        row = self.conn.execute(
+            """SELECT p.*, a.question, a.answer AS expected_answer,
+                      s.doc_id, d.file_name AS doc_name
+               FROM evaluation_predictions p
+               LEFT JOIN annotations a ON a.annotation_id = p.annotation_id
+               LEFT JOIN annotation_sets s ON s.set_id = a.set_id
+               LEFT JOIN documents d ON d.doc_id = s.doc_id
+               WHERE p.prediction_id = ?""",
+            (prediction_id,),
+        ).fetchone()
+        if not row:
+            return None
+        r = dict(row)
+        spans = self.conn.execute(
+            """SELECT sp.kind, sp.page_num, sp.quoted_text
+               FROM annotation_spans sp
+               WHERE sp.annotation_id = ?
+               ORDER BY sp.page_num""",
+            (r["annotation_id"],),
+        ).fetchall()
+        r["spans"] = [dict(s) for s in spans]
+        return r
+
+    # -- Metrics (Milestone 4) ---------------------------------------------
+
+    def create_metric(
+        self,
+        *,
+        name: str,
+        description: str,
+        type: str,
+        aggregation: str,
+        judge_prompt: str | None = None,
+        metadata: dict | None = None,
+    ) -> str:
+        metric_id = str(uuid.uuid4())
+        self.conn.execute(
+            """INSERT INTO metrics
+               (metric_id, name, description, type, aggregation, judge_prompt, metadata_json)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (
+                metric_id,
+                name,
+                description,
+                type,
+                aggregation,
+                judge_prompt,
+                json.dumps(metadata or {}),
+            ),
+        )
+        self.conn.commit()
+        return metric_id
+
+    def update_metric(
+        self,
+        metric_id: str,
+        *,
+        name: str,
+        description: str,
+        type: str,
+        aggregation: str,
+        judge_prompt: str | None = None,
+        metadata: dict | None = None,
+    ) -> bool:
+        cur = self.conn.execute(
+            """UPDATE metrics
+               SET name = ?, description = ?, type = ?, aggregation = ?,
+                   judge_prompt = ?, metadata_json = ?
+               WHERE metric_id = ?""",
+            (
+                name,
+                description,
+                type,
+                aggregation,
+                judge_prompt,
+                json.dumps(metadata or {}),
+                metric_id,
+            ),
+        )
+        self.conn.commit()
+        return cur.rowcount > 0
+
+    def delete_metric(self, metric_id: str) -> bool:
+        cur = self.conn.execute("DELETE FROM metrics WHERE metric_id = ?", (metric_id,))
+        self.conn.commit()
+        return cur.rowcount > 0
+
+    def list_metrics(self) -> list[dict]:
+        rows = self.conn.execute("SELECT * FROM metrics ORDER BY created_at DESC").fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            try:
+                d["metadata"] = json.loads(d.pop("metadata_json") or "{}")
+            except json.JSONDecodeError:
+                d["metadata"] = {}
+            out.append(d)
+        return out
+
+    def get_metric(self, metric_id: str) -> dict | None:
+        row = self.conn.execute(
+            "SELECT * FROM metrics WHERE metric_id = ?", (metric_id,)
+        ).fetchone()
+        if not row:
+            return None
+        d = dict(row)
+        try:
+            d["metadata"] = json.loads(d.pop("metadata_json") or "{}")
+        except json.JSONDecodeError:
+            d["metadata"] = {}
+        return d
+
+    # -- Judge runs (Milestone 4) ------------------------------------------
+
+    def create_judge_run(
+        self,
+        *,
+        evaluation_run_id: str,
+        name: str,
+        judge_type: str,
+        metric_ids: list[str],
+    ) -> str:
+        judge_run_id = str(uuid.uuid4())
+        self.conn.execute(
+            """INSERT INTO judge_runs
+               (judge_run_id, evaluation_run_id, name, judge_type, metric_ids_json, status)
+               VALUES (?, ?, ?, ?, ?, 'pending')""",
+            (
+                judge_run_id,
+                evaluation_run_id,
+                name,
+                judge_type,
+                json.dumps(metric_ids or []),
+            ),
+        )
+        self.conn.commit()
+        return judge_run_id
+
+    def update_judge_run_status(
+        self, judge_run_id: str, status: str, *, completed: bool = False
+    ) -> None:
+        if completed:
+            self.conn.execute(
+                "UPDATE judge_runs SET status = ?, completed_at = ? WHERE judge_run_id = ?",
+                (status, datetime.utcnow().isoformat(), judge_run_id),
+            )
+        else:
+            self.conn.execute(
+                "UPDATE judge_runs SET status = ? WHERE judge_run_id = ?",
+                (status, judge_run_id),
+            )
+        self.conn.commit()
+
+    def get_judge_run(self, judge_run_id: str) -> dict | None:
+        row = self.conn.execute(
+            "SELECT * FROM judge_runs WHERE judge_run_id = ?", (judge_run_id,)
+        ).fetchone()
+        if not row:
+            return None
+        d = dict(row)
+        try:
+            d["metric_ids"] = json.loads(d.pop("metric_ids_json") or "[]")
+        except json.JSONDecodeError:
+            d["metric_ids"] = []
+        return d
+
+    def list_judge_runs(self, evaluation_run_id: str | None = None) -> list[dict]:
+        if evaluation_run_id:
+            rows = self.conn.execute(
+                """SELECT j.*, r.name AS evaluation_run_name
+                   FROM judge_runs j
+                   LEFT JOIN evaluation_runs r ON r.run_id = j.evaluation_run_id
+                   WHERE j.evaluation_run_id = ?
+                   ORDER BY j.created_at DESC""",
+                (evaluation_run_id,),
+            ).fetchall()
+        else:
+            rows = self.conn.execute(
+                """SELECT j.*, r.name AS evaluation_run_name
+                   FROM judge_runs j
+                   LEFT JOIN evaluation_runs r ON r.run_id = j.evaluation_run_id
+                   ORDER BY j.created_at DESC"""
+            ).fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            try:
+                d["metric_ids"] = json.loads(d.pop("metric_ids_json") or "[]")
+            except json.JSONDecodeError:
+                d["metric_ids"] = []
+            out.append(d)
+        return out
+
+    def delete_judge_run(self, judge_run_id: str) -> bool:
+        cur = self.conn.execute("DELETE FROM judge_runs WHERE judge_run_id = ?", (judge_run_id,))
+        self.conn.commit()
+        return cur.rowcount > 0
+
+    # -- Evaluation results (Milestone 4) ----------------------------------
+
+    def upsert_evaluation_result(
+        self,
+        *,
+        judge_run_id: str,
+        evaluation_run_id: str,
+        prediction_id: str,
+        annotation_id: str,
+        metric_id: str,
+        score: float,
+        judge_type: str,
+        comment: str | None = None,
+        judge_reasoning: str | None = None,
+    ) -> str:
+        existing = self.conn.execute(
+            """SELECT result_id FROM evaluation_results
+               WHERE judge_run_id = ? AND prediction_id = ? AND metric_id = ?""",
+            (judge_run_id, prediction_id, metric_id),
+        ).fetchone()
+        if existing:
+            result_id = existing["result_id"]
+            self.conn.execute(
+                """UPDATE evaluation_results
+                   SET score = ?, judge_type = ?, comment = ?, judge_reasoning = ?,
+                       created_at = CURRENT_TIMESTAMP
+                   WHERE result_id = ?""",
+                (score, judge_type, comment, judge_reasoning, result_id),
+            )
+        else:
+            result_id = str(uuid.uuid4())
+            self.conn.execute(
+                """INSERT INTO evaluation_results
+                   (result_id, judge_run_id, evaluation_run_id, prediction_id,
+                    annotation_id, metric_id, score, judge_type, comment, judge_reasoning)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    result_id,
+                    judge_run_id,
+                    evaluation_run_id,
+                    prediction_id,
+                    annotation_id,
+                    metric_id,
+                    score,
+                    judge_type,
+                    comment,
+                    judge_reasoning,
+                ),
+            )
+        self.conn.commit()
+        return result_id
+
+    def list_evaluation_results(self, judge_run_id: str) -> list[dict]:
+        rows = self.conn.execute(
+            """SELECT r.*, m.name AS metric_name, m.type AS metric_type,
+                      m.aggregation AS metric_aggregation
+               FROM evaluation_results r
+               LEFT JOIN metrics m ON m.metric_id = r.metric_id
+               WHERE r.judge_run_id = ?
+               ORDER BY r.created_at ASC""",
+            (judge_run_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_results_for_prediction(self, judge_run_id: str, prediction_id: str) -> dict[str, dict]:
+        """Return {metric_id: result_row} for a given prediction in a judge run."""
+        rows = self.conn.execute(
+            """SELECT * FROM evaluation_results
+               WHERE judge_run_id = ? AND prediction_id = ?""",
+            (judge_run_id, prediction_id),
+        ).fetchall()
+        return {r["metric_id"]: dict(r) for r in rows}
+
+    def aggregate_judge_run(self, judge_run_id: str) -> list[dict]:
+        """Compute per-metric aggregate for a judge run.
+
+        Returns a list of {metric_id, metric_name, aggregation, score,
+        judged_count, missing_count, type}.
+        """
+        jr = self.get_judge_run(judge_run_id)
+        if not jr:
+            return []
+        # total predictions under the underlying evaluation run
+        total_preds = self.conn.execute(
+            "SELECT COUNT(*) AS c FROM evaluation_predictions WHERE run_id = ?",
+            (jr["evaluation_run_id"],),
+        ).fetchone()["c"]
+
+        out: list[dict] = []
+        for metric_id in jr["metric_ids"]:
+            metric = self.get_metric(metric_id)
+            if not metric:
+                continue
+            rows = self.conn.execute(
+                """SELECT score FROM evaluation_results
+                   WHERE judge_run_id = ? AND metric_id = ?""",
+                (judge_run_id, metric_id),
+            ).fetchall()
+            scores = [r["score"] for r in rows]
+            judged = len(scores)
+            missing = max(0, total_preds - judged)
+            agg = metric["aggregation"]
+            if not scores:
+                value = None
+            elif agg == "avg":
+                value = sum(scores) / len(scores)
+            elif agg == "sum":
+                value = sum(scores)
+            elif agg == "min":
+                value = min(scores)
+            elif agg == "max":
+                value = max(scores)
+            else:
+                value = None
+            out.append(
+                {
+                    "metric_id": metric_id,
+                    "metric_name": metric["name"],
+                    "aggregation": agg,
+                    "type": metric["type"],
+                    "score": value,
+                    "judged_count": judged,
+                    "missing_count": missing,
+                    "total_predictions": total_preds,
+                }
+            )
+        return out
 
     def close(self):
         self.conn.close()

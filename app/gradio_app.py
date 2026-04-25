@@ -8,6 +8,21 @@ from src.bootstrap import init_app
 init_app()
 
 from app.annotation_tab import annotator_head_script, build_annotation_tab, on_tab_load
+from app.dashboard_tab import (
+    build_data_dashboard_tab,
+    build_evaluation_dashboard_tab,
+    on_dashboard_load,
+)
+from app.datasets_tab import build_datasets_tab
+from app.datasets_tab import on_tab_load as on_datasets_tab_load
+from app.evaluation_tab import (
+    build_execution_run_tab,
+    build_judge_run_tab,
+    build_metrics_tab,
+    on_judge_tab_load,
+    on_metrics_tab_load,
+)
+from app.evaluation_tab import on_tab_load as on_evaluation_tab_load
 from app.utils import ChatResult, render_chat_with_cache
 from src.agents import run_agent
 from src.chat import ChatAssistant
@@ -21,6 +36,46 @@ SHOW_INGESTION_LOGS = os.getenv("SHOW_INGESTION_LOGS", "false").lower() == "true
 ASSISTANT_NAME = os.getenv("ASSISTANT_NAME", "Doc2Agent")
 LOGO_DARK_PATH = "public/logo_dark.png"
 LOGO_LIGHT_PATH = "public/logo_light.png"
+
+_LOGO_THEME_STYLE = """
+<style>
+    .logo-dark { display: none; }
+    .dark .logo-dark { display: block; }
+    .dark .logo-light { display: none; }
+    .doc2agent-hero-logo { max-width: 360px; margin: 0 auto; }
+</style>
+"""
+
+
+def _doc2agent_logo_imgs() -> None:
+    gr.Image(
+        value=LOGO_LIGHT_PATH,
+        show_label=False,
+        container=False,
+        interactive=False,
+        buttons=[],
+        elem_classes="doc2agent-logo logo-light",
+        width="100%",
+    )
+    gr.Image(
+        value=LOGO_DARK_PATH,
+        show_label=False,
+        container=False,
+        interactive=False,
+        buttons=[],
+        elem_classes="doc2agent-logo logo-dark",
+        width="100%",
+    )
+
+
+def _doc2agent_logo_block(*, hero: bool = False) -> None:
+    """Light/dark theme-aware logos; use hero=True on the landing page for a centered max width."""
+    gr.HTML(_LOGO_THEME_STYLE)
+    if hero:
+        with gr.Column(elem_classes="doc2agent-hero-logo"):
+            _doc2agent_logo_imgs()
+    else:
+        _doc2agent_logo_imgs()
 
 
 # ---------------------------------------------------------------------------
@@ -307,6 +362,14 @@ async def on_flush_all(assistant, history):
     return history, gr.update(choices=choices, value=None)
 
 
+async def on_clean_empty_sessions(assistant, session_id, history):
+    if assistant is None:
+        return history, gr.update()
+    count = assistant.store.delete_empty_chat_sessions(except_session_id=session_id)
+    history = history + [{"role": "assistant", "content": f"Deleted {count} empty session(s)."}]
+    return history, gr.update(choices=_session_choices(assistant), value=session_id)
+
+
 async def on_detach(assistant):
     if assistant is None:
         return assistant, None, None, "No file attached."
@@ -398,37 +461,11 @@ def build_chat_tab():
     file_name_state = gr.State(value=None)
     file_path_state = gr.State(value=None)
     session_id_state = gr.State(value=None)
-    gr.HTML(
-        """
-        <style>
-            .logo-dark { display: none; }
-            .dark .logo-dark { display: block; }
-            .dark .logo-light { display: none; }
-        </style>
-        """
-    )
 
     with gr.Row():
         # -- Sidebar --
         with gr.Column(scale=1, min_width=260):
-            gr.Image(
-                value=LOGO_LIGHT_PATH,
-                show_label=False,
-                container=False,
-                interactive=False,
-                buttons=[],
-                elem_classes="doc2agent-logo logo-light",
-                width="100%",
-            )
-            gr.Image(
-                value=LOGO_DARK_PATH,
-                show_label=False,
-                container=False,
-                interactive=False,
-                buttons=[],
-                elem_classes="doc2agent-logo logo-dark",
-                width="100%",
-            )
+            _doc2agent_logo_block(hero=False)
             gr.Markdown(f"### {ASSISTANT_NAME}")
             file_upload = gr.File(label="Upload PDF", file_types=[".pdf"], type="filepath")
             status_md = gr.Markdown("No file attached.")
@@ -447,7 +484,11 @@ def build_chat_tab():
             with gr.Row():
                 new_session_btn = gr.Button("New Session", size="sm")
                 clear_session_btn = gr.Button("Clear Session Messages", size="sm")
-            clear_all_sessions_btn = gr.Button("Clear All Sessions", variant="stop", size="sm")
+            with gr.Row():
+                clean_empty_sessions_btn = gr.Button(
+                    "Clean Empty Sessions (Except Current)", size="sm"
+                )
+                clear_all_sessions_btn = gr.Button("Clear All Sessions", variant="stop", size="sm")
 
         # -- Chat area --
         with gr.Column(scale=3):
@@ -576,12 +617,49 @@ def build_chat_tab():
         inputs=[assistant_state, file_name_state],
         outputs=[assistant_state, session_id_state, chatbot, session_dropdown, status_md],
     )
+    clean_empty_sessions_btn.click(
+        fn=on_clean_empty_sessions,
+        inputs=[assistant_state, session_id_state, chatbot],
+        outputs=[chatbot, session_dropdown],
+    )
 
     return assistant_state, chatbot, doc_dropdown, status_md, session_id_state, session_dropdown
 
 
+def _build_homepage():
+    _doc2agent_logo_block(hero=True)
+    gr.Markdown(
+        f'<div style="text-align:center">'
+        f"<h1>{ASSISTANT_NAME}</h1>"
+        "<p>Intelligent PDF assistant with a multi-agent architecture — local-first, "
+        "privacy-preserving Q&A over your documents.</p></div>"
+    )
+    gr.Markdown(
+        '<p style="text-align:center; opacity:0.85; font-size:0.95em">'
+        "Use the top bar or the buttons below to open a workspace.</p>"
+    )
+    with gr.Row():
+        gr.Button("Chat", link="./chat", variant="primary", size="lg", scale=1)
+        gr.Button("Datasets", link="./datasets", size="lg", scale=1)
+        gr.Button("Evaluation", link="./evaluation", size="lg", scale=1)
+        gr.Button("Dashboard", link="./dashboard", size="lg", scale=1)
+        gr.Button("Config", link="./config", size="lg", scale=1)
+    gr.Markdown(
+        '<div style="text-align:center; margin-top:0.5em; font-size:0.9em; opacity:0.8">'
+        "<strong>Chat</strong> — Q&amp;A with your PDFs. "
+        "<strong>Datasets</strong> — build evaluation sets from live chat sessions "
+        "or from manually annotated documents."
+        "</div>"
+    )
+
+
 def create_app() -> gr.Blocks:
-    with gr.Blocks(title=ASSISTANT_NAME, head=annotator_head_script()) as demo:
+    # Homepage (default route)
+    with gr.Blocks(title=ASSISTANT_NAME) as demo:
+        _build_homepage()
+
+    # Chat page
+    with demo.route("Chat") as chat_page:
         with gr.Tabs():
             with gr.Tab("Chat with Documents"):
                 (
@@ -592,10 +670,7 @@ def create_app() -> gr.Blocks:
                     session_id_state,
                     session_dropdown,
                 ) = build_chat_tab()
-            with gr.Tab("Annotate"):
-                ann_doc_dd = build_annotation_tab(assistant_state)
-
-        demo.load(
+        chat_page.load(
             fn=on_app_load,
             outputs=[
                 assistant_state,
@@ -605,12 +680,139 @@ def create_app() -> gr.Blocks:
                 session_id_state,
                 session_dropdown,
             ],
+        )
+
+    # Datasets page — two tabs sharing one assistant_state
+    with demo.route("Datasets") as datasets_page:
+        ds_assistant_state = gr.State(value=None)
+        with gr.Tabs():
+            with gr.Tab("Live Chat Datasets"):
+                (
+                    _,
+                    ds_dataset_dd,
+                    ds_session_dd,
+                    ds_message_cb,
+                    ds_preview_md,
+                    ds_export_json,
+                ) = build_datasets_tab(ds_assistant_state)
+            with gr.Tab("Annotate Documents"):
+                ev_ann_doc_dd, ev_dataset_dd = build_annotation_tab(ds_assistant_state)
+
+        datasets_page.load(
+            fn=on_datasets_tab_load,
+            inputs=[ds_assistant_state],
+            outputs=[
+                ds_assistant_state,
+                ds_dataset_dd,
+                ds_session_dd,
+                ds_message_cb,
+                ds_export_json,
+                ds_preview_md,
+            ],
         ).then(
             fn=on_tab_load,
-            inputs=[assistant_state],
-            outputs=[ann_doc_dd],
+            inputs=[ds_assistant_state],
+            outputs=[ev_ann_doc_dd],
+        ).then(
+            fn=lambda a: gr.update(choices=_annotate_dataset_choices(a)),
+            inputs=[ds_assistant_state],
+            outputs=[ev_dataset_dd],
         )
+
+    # Evaluation page — Execution Run / Judge Run (Milestones 3 & 4)
+    with demo.route("Evaluation") as evaluation_page:
+        ev_assistant_state = gr.State(value=None)
+        with gr.Tabs():
+            with gr.Tab("Execution Run"):
+                ev_dataset_dd, ev_run_dd, ev_results_tbl, ev_summary_md = build_execution_run_tab(
+                    ev_assistant_state
+                )
+            with gr.Tab("Judge Run"):
+                judge_eval_dd, judge_metrics_multi, judge_run_dd, judge_aggregates = (
+                    build_judge_run_tab(ev_assistant_state)
+                )
+
+        evaluation_page.load(
+            fn=on_evaluation_tab_load,
+            inputs=[ev_assistant_state],
+            outputs=[
+                ev_assistant_state,
+                ev_dataset_dd,
+                ev_run_dd,
+                ev_results_tbl,
+                ev_summary_md,
+            ],
+        ).then(
+            fn=on_judge_tab_load,
+            inputs=[ev_assistant_state],
+            outputs=[
+                ev_assistant_state,
+                judge_eval_dd,
+                judge_metrics_multi,
+                judge_run_dd,
+                judge_aggregates,
+            ],
+        )
+
+    # Dashboard page — Data and Evaluations overview (Milestone 5)
+    with demo.route("Dashboard") as dashboard_page:
+        dash_assistant_state = gr.State(value=None)
+        with gr.Tabs():
+            with gr.Tab("Data"):
+                data_kpis, data_docs, data_sets, data_datasets = build_data_dashboard_tab(
+                    dash_assistant_state
+                )
+            with gr.Tab("Evaluations"):
+                (
+                    eval_kpis,
+                    eval_runs,
+                    eval_judge,
+                    eval_pivot,
+                    eval_metric,
+                    eval_failure,
+                ) = build_evaluation_dashboard_tab(dash_assistant_state)
+
+        dashboard_page.load(
+            fn=on_dashboard_load,
+            inputs=[dash_assistant_state],
+            outputs=[
+                dash_assistant_state,
+                data_kpis,
+                data_docs,
+                data_sets,
+                data_datasets,
+                eval_kpis,
+                eval_runs,
+                eval_judge,
+                eval_pivot,
+                eval_metric,
+                eval_failure,
+            ],
+        )
+
+    # Config page — Metrics and general app configuration
+    with demo.route("Config") as config_page:
+        cfg_assistant_state = gr.State(value=None)
+        with gr.Tabs():
+            with gr.Tab("Metrics"):
+                metric_dd, metrics_table, metrics_status = build_metrics_tab(cfg_assistant_state)
+
+        config_page.load(
+            fn=on_metrics_tab_load,
+            inputs=[cfg_assistant_state],
+            outputs=[cfg_assistant_state, metric_dd, metrics_table, metrics_status],
+        )
+
     return demo
+
+
+def _annotate_dataset_choices(assistant):
+    if assistant is None:
+        return []
+    return [
+        (f"{d['name']} ({d['annotation_count']} items)", d["dataset_id"])
+        for d in assistant.store.list_datasets()
+    ]
 
 
 if __name__ == "__main__":
@@ -621,4 +823,5 @@ if __name__ == "__main__":
         server_port=7860,
         theme=gr.themes.Soft(),
         allowed_paths=[pdf_storage_dir],
+        head=annotator_head_script(),
     )
