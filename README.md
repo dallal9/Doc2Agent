@@ -61,7 +61,7 @@ cp env.example .env
 make run
 ```
 
-5. **Access the web UI** (typically `http://localhost:7860`). The homepage links to the two workspaces via the top navbar:
+5. **Access the web UI** (typically `http://localhost:7860`). The home page shows a light/dark-aware logo, a short tagline, and **Chat** / **Datasets** buttons; the top bar links to the same two routes:
    - **Chat** (`/chat`) — Q&A with the agents
    - **Datasets** (`/datasets`) — two tabs: build datasets from live chat sessions or from manually annotated documents
 

@@ -10,6 +10,14 @@ init_app()
 from app.annotation_tab import annotator_head_script, build_annotation_tab, on_tab_load
 from app.datasets_tab import build_datasets_tab
 from app.datasets_tab import on_tab_load as on_datasets_tab_load
+from app.evaluation_tab import (
+    build_execution_run_tab,
+    build_judge_run_tab,
+    build_metrics_tab,
+    on_judge_tab_load,
+    on_metrics_tab_load,
+)
+from app.evaluation_tab import on_tab_load as on_evaluation_tab_load
 from app.utils import ChatResult, render_chat_with_cache
 from src.agents import run_agent
 from src.chat import ChatAssistant
@@ -628,6 +636,8 @@ def _build_homepage():
     with gr.Row():
         gr.Button("Chat", link="./chat", variant="primary", size="lg", scale=1)
         gr.Button("Datasets", link="./datasets", size="lg", scale=1)
+        gr.Button("Evaluation", link="./evaluation", size="lg", scale=1)
+        gr.Button("Config", link="./config", size="lg", scale=1)
     gr.Markdown(
         '<div style="text-align:center; margin-top:0.5em; font-size:0.9em; opacity:0.8">'
         "<strong>Chat</strong> — Q&amp;A with your PDFs. "
@@ -701,6 +711,56 @@ def create_app() -> gr.Blocks:
             fn=lambda a: gr.update(choices=_annotate_dataset_choices(a)),
             inputs=[ds_assistant_state],
             outputs=[ev_dataset_dd],
+        )
+
+    # Evaluation page — Execution Run / Judge Run (Milestones 3 & 4)
+    with demo.route("Evaluation") as evaluation_page:
+        ev_assistant_state = gr.State(value=None)
+        with gr.Tabs():
+            with gr.Tab("Execution Run"):
+                ev_dataset_dd, ev_run_dd, ev_results_tbl, ev_summary_md = (
+                    build_execution_run_tab(ev_assistant_state)
+                )
+            with gr.Tab("Judge Run"):
+                judge_eval_dd, judge_metrics_multi, judge_run_dd, judge_aggregates = (
+                    build_judge_run_tab(ev_assistant_state)
+                )
+
+        evaluation_page.load(
+            fn=on_evaluation_tab_load,
+            inputs=[ev_assistant_state],
+            outputs=[
+                ev_assistant_state,
+                ev_dataset_dd,
+                ev_run_dd,
+                ev_results_tbl,
+                ev_summary_md,
+            ],
+        ).then(
+            fn=on_judge_tab_load,
+            inputs=[ev_assistant_state],
+            outputs=[
+                ev_assistant_state,
+                judge_eval_dd,
+                judge_metrics_multi,
+                judge_run_dd,
+                judge_aggregates,
+            ],
+        )
+
+    # Config page — Metrics and general app configuration
+    with demo.route("Config") as config_page:
+        cfg_assistant_state = gr.State(value=None)
+        with gr.Tabs():
+            with gr.Tab("Metrics"):
+                metric_dd, metrics_table, metrics_status = build_metrics_tab(
+                    cfg_assistant_state
+                )
+
+        config_page.load(
+            fn=on_metrics_tab_load,
+            inputs=[cfg_assistant_state],
+            outputs=[cfg_assistant_state, metric_dd, metrics_table, metrics_status],
         )
 
     return demo

@@ -9,6 +9,13 @@ from .document import (
     StructuredDocument,
     TableData,
 )
+from .evaluation import (
+    EvaluationPrediction,
+    EvaluationResult,
+    EvaluationRun,
+    JudgeRun,
+    Metric,
+)
 
 __all__ = [
     "Annotation",
@@ -17,6 +24,11 @@ __all__ = [
     "DocumentMetadata",
     "DocumentPage",
     "DocumentSchema",
+    "EvaluationPrediction",
+    "EvaluationResult",
+    "EvaluationRun",
+    "JudgeRun",
+    "Metric",
     "Heading",
     "PageSchema",
     "Span",
