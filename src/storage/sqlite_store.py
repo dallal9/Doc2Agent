@@ -919,9 +919,7 @@ class SQLiteStore:
         self.conn.commit()
         return run_id
 
-    def update_run_status(
-        self, run_id: str, status: str, *, completed: bool = False
-    ) -> None:
+    def update_run_status(self, run_id: str, status: str, *, completed: bool = False) -> None:
         if completed:
             self.conn.execute(
                 "UPDATE evaluation_runs SET status = ?, completed_at = ? WHERE run_id = ?",
@@ -966,9 +964,7 @@ class SQLiteStore:
         return [dict(r) for r in rows]
 
     def delete_evaluation_run(self, run_id: str) -> bool:
-        result = self.conn.execute(
-            "DELETE FROM evaluation_runs WHERE run_id = ?", (run_id,)
-        )
+        result = self.conn.execute("DELETE FROM evaluation_runs WHERE run_id = ?", (run_id,))
         self.conn.commit()
         return result.rowcount > 0
 
@@ -1110,9 +1106,7 @@ class SQLiteStore:
         return cur.rowcount > 0
 
     def list_metrics(self) -> list[dict]:
-        rows = self.conn.execute(
-            "SELECT * FROM metrics ORDER BY created_at DESC"
-        ).fetchall()
+        rows = self.conn.execute("SELECT * FROM metrics ORDER BY created_at DESC").fetchall()
         out = []
         for r in rows:
             d = dict(r)
@@ -1218,9 +1212,7 @@ class SQLiteStore:
         return out
 
     def delete_judge_run(self, judge_run_id: str) -> bool:
-        cur = self.conn.execute(
-            "DELETE FROM judge_runs WHERE judge_run_id = ?", (judge_run_id,)
-        )
+        cur = self.conn.execute("DELETE FROM judge_runs WHERE judge_run_id = ?", (judge_run_id,))
         self.conn.commit()
         return cur.rowcount > 0
 
@@ -1288,9 +1280,7 @@ class SQLiteStore:
         ).fetchall()
         return [dict(r) for r in rows]
 
-    def get_results_for_prediction(
-        self, judge_run_id: str, prediction_id: str
-    ) -> dict[str, dict]:
+    def get_results_for_prediction(self, judge_run_id: str, prediction_id: str) -> dict[str, dict]:
         """Return {metric_id: result_row} for a given prediction in a judge run."""
         rows = self.conn.execute(
             """SELECT * FROM evaluation_results

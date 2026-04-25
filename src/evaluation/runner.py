@@ -289,9 +289,7 @@ async def run_evaluation(
 
     final_status = "completed" if counts["failed"] == 0 else "failed"
     store.update_run_status(run_id, final_status, completed=True)
-    logger.info(
-        "Evaluation run=%s %s counts=%s total=%d", run_id, final_status, counts, total
-    )
+    logger.info("Evaluation run=%s %s counts=%s total=%d", run_id, final_status, counts, total)
     return {
         "run_id": run_id,
         "status": final_status,

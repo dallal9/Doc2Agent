@@ -92,9 +92,7 @@ def _clip_score(score: float, metric: dict) -> float:
 
 def _build_judge_prompt(prediction: dict, metric: dict) -> str:
     metric_prompt = (metric.get("judge_prompt") or "").strip()
-    metric_prompt_block = (
-        f"Metric judge guidance:\n{metric_prompt}\n\n" if metric_prompt else ""
-    )
+    metric_prompt_block = f"Metric judge guidance:\n{metric_prompt}\n\n" if metric_prompt else ""
     mtype = metric.get("type", "float")
     if mtype == "bool":
         scale_hint = "Output score as 0 (false) or 1 (true)."

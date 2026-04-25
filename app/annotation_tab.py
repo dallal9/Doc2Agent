@@ -289,7 +289,9 @@ def on_create_and_add_dataset(set_id, new_dataset_name, assistant):
         return gr.update(), "Enter a name for the new dataset.", new_dataset_name
     dataset_id = assistant.store.create_dataset(name=name)
     count = assistant.store.add_annotation_set_to_dataset(dataset_id, set_id)
-    logger.info("created dataset %s and linked %d annotations from set %s", dataset_id, count, set_id)
+    logger.info(
+        "created dataset %s and linked %d annotations from set %s", dataset_id, count, set_id
+    )
     return (
         gr.update(choices=_dataset_choices(assistant), value=dataset_id),
         f"Created dataset **{name}** and added {count} annotation(s).",

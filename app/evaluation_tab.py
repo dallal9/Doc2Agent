@@ -190,9 +190,7 @@ async def on_start_run(
             "",
             "_Select a run to see its summary._",
         )
-    config, err = _resolve_config(
-        concurrency, max_samples, shuffle, seed, context_mode, extra_json
-    )
+    config, err = _resolve_config(concurrency, max_samples, shuffle, seed, context_mode, extra_json)
     if err:
         return (
             assistant,
@@ -549,12 +547,8 @@ def build_metrics_tab(assistant_state: gr.State):
             name_in = gr.Textbox(label="Name", placeholder="e.g. Correctness")
             desc_in = gr.Textbox(label="Description", lines=2)
             with gr.Row():
-                type_in = gr.Dropdown(
-                    label="Type", choices=METRIC_TYPES, value="float"
-                )
-                agg_in = gr.Dropdown(
-                    label="Aggregation", choices=AGGREGATIONS, value="avg"
-                )
+                type_in = gr.Dropdown(label="Type", choices=METRIC_TYPES, value="float")
+                agg_in = gr.Dropdown(label="Aggregation", choices=AGGREGATIONS, value="avg")
             judge_prompt_in = gr.Textbox(
                 label="Judge prompt (optional)",
                 lines=4,
@@ -625,10 +619,7 @@ def _eval_run_choices(assistant: ChatAssistant | None) -> list[tuple[str, str]]:
         return []
     out = []
     for r in assistant.store.list_evaluation_runs():
-        label = (
-            f"{r['name']} · {r.get('dataset_name', '?')} · "
-            f"preds={r['prediction_count']}"
-        )
+        label = f"{r['name']} · {r.get('dataset_name', '?')} · " f"preds={r['prediction_count']}"
         out.append((label, r["run_id"]))
     return out
 
@@ -667,7 +658,9 @@ def _aggregates_html(assistant: ChatAssistant | None, judge_run_id: str | None) 
     ]
     for r in rows:
         score = r["score"]
-        score_str = "—" if score is None else (f"{score:.3f}" if isinstance(score, float) else str(score))
+        score_str = (
+            "—" if score is None else (f"{score:.3f}" if isinstance(score, float) else str(score))
+        )
         cells = [
             r["metric_name"],
             r["aggregation"],
@@ -696,9 +689,7 @@ def _prediction_view_html(prediction: dict | None) -> str:
     answer = html.escape(prediction.get("agent_answer") or "")
     thoughts = html.escape(prediction.get("agent_thoughts") or "")
     context = html.escape(prediction.get("context_used") or "")
-    doc_ref = html.escape(
-        prediction.get("doc_name") or prediction.get("document_reference") or "—"
-    )
+    doc_ref = html.escape(prediction.get("doc_name") or prediction.get("document_reference") or "—")
     spans = prediction.get("spans") or []
     if spans:
         span_lines = []
@@ -715,9 +706,7 @@ def _prediction_view_html(prediction: dict | None) -> str:
         spans_block = "<em>(no evidence spans)</em>"
 
     pre = "style='white-space:pre-wrap;background:#1e1e1e;color:#ddd;padding:8px;border-radius:4px;max-height:200px;overflow:auto'"
-    details = (
-        "style='margin-top:8px'"
-    )
+    details = "style='margin-top:8px'"
     return (
         f"<div style='font-size:0.92em'>"
         f"<div><strong>Document:</strong> {doc_ref}</div>"
@@ -808,17 +797,17 @@ def on_judge_run_select(judge_run_id, assistant):
 
 
 def _scores_rows_for_pred(assistant, judge_run_id, pred, metric_ids):
-    existing = assistant.store.get_results_for_prediction(
-        judge_run_id, pred["prediction_id"]
-    )
+    existing = assistant.store.get_results_for_prediction(judge_run_id, pred["prediction_id"])
     rows = []
     for mid in metric_ids:
         metric = assistant.store.get_metric(mid)
         if not metric:
             continue
         existing_r = existing.get(mid)
-        score_val = "" if existing_r is None else _format_score_for_type(
-            existing_r["score"], metric["type"]
+        score_val = (
+            ""
+            if existing_r is None
+            else _format_score_for_type(existing_r["score"], metric["type"])
         )
         comment = (existing_r.get("comment") if existing_r else "") or ""
         rows.append([metric["name"], metric["type"], score_val, comment])
@@ -978,12 +967,8 @@ def build_judge_run_tab(assistant_state: gr.State):
                     label="Metrics", choices=[], multiselect=True, interactive=True, scale=3
                 )
                 gr.Button("Manage metrics →", link="../config", size="sm", scale=1)
-            judge_type_rd = gr.Radio(
-                label="Judge type", choices=["manual", "llm"], value="manual"
-            )
-            jr_name = gr.Textbox(
-                label="Judge run name", placeholder="e.g. manual-2026-04-25"
-            )
+            judge_type_rd = gr.Radio(label="Judge type", choices=["manual", "llm"], value="manual")
+            jr_name = gr.Textbox(label="Judge run name", placeholder="e.g. manual-2026-04-25")
             create_jr_btn = gr.Button("Create judge run", variant="primary")
 
             gr.Markdown("### Existing judge runs")

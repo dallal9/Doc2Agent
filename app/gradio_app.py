@@ -718,8 +718,8 @@ def create_app() -> gr.Blocks:
         ev_assistant_state = gr.State(value=None)
         with gr.Tabs():
             with gr.Tab("Execution Run"):
-                ev_dataset_dd, ev_run_dd, ev_results_tbl, ev_summary_md = (
-                    build_execution_run_tab(ev_assistant_state)
+                ev_dataset_dd, ev_run_dd, ev_results_tbl, ev_summary_md = build_execution_run_tab(
+                    ev_assistant_state
                 )
             with gr.Tab("Judge Run"):
                 judge_eval_dd, judge_metrics_multi, judge_run_dd, judge_aggregates = (
@@ -753,9 +753,7 @@ def create_app() -> gr.Blocks:
         cfg_assistant_state = gr.State(value=None)
         with gr.Tabs():
             with gr.Tab("Metrics"):
-                metric_dd, metrics_table, metrics_status = build_metrics_tab(
-                    cfg_assistant_state
-                )
+                metric_dd, metrics_table, metrics_status = build_metrics_tab(cfg_assistant_state)
 
         config_page.load(
             fn=on_metrics_tab_load,
