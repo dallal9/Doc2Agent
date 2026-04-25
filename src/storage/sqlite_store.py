@@ -160,6 +160,7 @@ CREATE TABLE IF NOT EXISTS evaluation_runs (
     run_id TEXT PRIMARY KEY,
     dataset_id TEXT NOT NULL,
     name TEXT NOT NULL,
+    label TEXT,
     description TEXT,
     status TEXT NOT NULL DEFAULT 'pending',
     agent_config_json TEXT,
@@ -293,6 +294,11 @@ class SQLiteStore:
             self.conn.execute("ALTER TABLE documents ADD COLUMN file_mod_time REAL")
         if "file_hash" not in columns:
             self.conn.execute("ALTER TABLE documents ADD COLUMN file_hash TEXT")
+
+        cur = self.conn.execute("PRAGMA table_info(evaluation_runs)")
+        eval_cols = {row[1] for row in cur.fetchall()}
+        if eval_cols and "label" not in eval_cols:
+            self.conn.execute("ALTER TABLE evaluation_runs ADD COLUMN label TEXT")
 
         # Create query_cache table if it doesn't exist
         cur = self.conn.execute(
@@ -906,15 +912,16 @@ class SQLiteStore:
         *,
         dataset_id: str,
         name: str,
+        label: str | None = None,
         description: str | None = None,
         agent_config: dict | None = None,
     ) -> str:
         run_id = str(uuid.uuid4())
         self.conn.execute(
             """INSERT INTO evaluation_runs
-               (run_id, dataset_id, name, description, status, agent_config_json)
-               VALUES (?, ?, ?, ?, 'pending', ?)""",
-            (run_id, dataset_id, name, description, json.dumps(agent_config or {})),
+               (run_id, dataset_id, name, label, description, status, agent_config_json)
+               VALUES (?, ?, ?, ?, ?, 'pending', ?)""",
+            (run_id, dataset_id, name, label, description, json.dumps(agent_config or {})),
         )
         self.conn.commit()
         return run_id

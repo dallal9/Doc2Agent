@@ -8,6 +8,11 @@ from src.bootstrap import init_app
 init_app()
 
 from app.annotation_tab import annotator_head_script, build_annotation_tab, on_tab_load
+from app.dashboard_tab import (
+    build_data_dashboard_tab,
+    build_evaluation_dashboard_tab,
+    on_dashboard_load,
+)
 from app.datasets_tab import build_datasets_tab
 from app.datasets_tab import on_tab_load as on_datasets_tab_load
 from app.evaluation_tab import (
@@ -637,6 +642,7 @@ def _build_homepage():
         gr.Button("Chat", link="./chat", variant="primary", size="lg", scale=1)
         gr.Button("Datasets", link="./datasets", size="lg", scale=1)
         gr.Button("Evaluation", link="./evaluation", size="lg", scale=1)
+        gr.Button("Dashboard", link="./dashboard", size="lg", scale=1)
         gr.Button("Config", link="./config", size="lg", scale=1)
     gr.Markdown(
         '<div style="text-align:center; margin-top:0.5em; font-size:0.9em; opacity:0.8">'
@@ -745,6 +751,42 @@ def create_app() -> gr.Blocks:
                 judge_metrics_multi,
                 judge_run_dd,
                 judge_aggregates,
+            ],
+        )
+
+    # Dashboard page — Data and Evaluations overview (Milestone 5)
+    with demo.route("Dashboard") as dashboard_page:
+        dash_assistant_state = gr.State(value=None)
+        with gr.Tabs():
+            with gr.Tab("Data"):
+                data_kpis, data_docs, data_sets, data_datasets = build_data_dashboard_tab(
+                    dash_assistant_state
+                )
+            with gr.Tab("Evaluations"):
+                (
+                    eval_kpis,
+                    eval_runs,
+                    eval_judge,
+                    eval_pivot,
+                    eval_metric,
+                    eval_failure,
+                ) = build_evaluation_dashboard_tab(dash_assistant_state)
+
+        dashboard_page.load(
+            fn=on_dashboard_load,
+            inputs=[dash_assistant_state],
+            outputs=[
+                dash_assistant_state,
+                data_kpis,
+                data_docs,
+                data_sets,
+                data_datasets,
+                eval_kpis,
+                eval_runs,
+                eval_judge,
+                eval_pivot,
+                eval_metric,
+                eval_failure,
             ],
         )
 

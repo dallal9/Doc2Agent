@@ -170,6 +170,7 @@ def _resolve_config(
 async def on_start_run(
     dataset_id,
     run_name,
+    run_label,
     run_desc,
     concurrency,
     max_samples,
@@ -202,10 +203,15 @@ async def on_start_run(
         )
 
     name = (run_name or "").strip() or "Eval run"
+    label = (run_label or "").strip() or None
     desc = (run_desc or "").strip() or None
 
     run_id = assistant.store.create_evaluation_run(
-        dataset_id=dataset_id, name=name, description=desc, agent_config=config
+        dataset_id=dataset_id,
+        name=name,
+        label=label,
+        description=desc,
+        agent_config=config,
     )
     logger.info("Started evaluation run=%s dataset=%s config=%s", run_id, dataset_id, config)
 
@@ -268,6 +274,10 @@ def build_execution_run_tab(assistant_state: gr.State):
             gr.Markdown("### New run")
             dataset_dropdown = gr.Dropdown(label="Dataset", choices=[], interactive=True)
             run_name = gr.Textbox(label="Run name", placeholder="e.g. baseline-2026-04-24")
+            run_label = gr.Textbox(
+                label="Label (optional)",
+                placeholder="Short tag — used as the default judge run name.",
+            )
             run_desc = gr.Textbox(label="Description (optional)", lines=2)
             with gr.Accordion("Run configuration", open=True):
                 with gr.Row():
@@ -321,6 +331,7 @@ def build_execution_run_tab(assistant_state: gr.State):
         inputs=[
             dataset_dropdown,
             run_name,
+            run_label,
             run_desc,
             concurrency_in,
             max_samples_in,
@@ -378,15 +389,25 @@ def _metrics_table_html(assistant: ChatAssistant | None) -> str:
         "<thead><tr>"
         + "".join(
             f"<th style='text-align:left;padding:6px;border-bottom:1px solid #888'>{h}</th>"
-            for h in ["Name", "Type", "Aggregation", "Description", "Has judge prompt"]
+            for h in ["Name", "Type", "Aggregation", "Range", "Description", "Has judge prompt"]
         )
         + "</tr></thead><tbody>",
     ]
     for m in metrics:
+        meta = m.get("metadata") or {}
+        mn = meta.get("min")
+        mx = meta.get("max")
+        if m["type"] == "bool":
+            range_str = "—"
+        elif mn is None and mx is None:
+            range_str = "unbounded"
+        else:
+            range_str = f"[{'-∞' if mn is None else mn}, {'∞' if mx is None else mx}]"
         cells = [
             m["name"],
             m["type"],
             m["aggregation"],
+            range_str,
             (m.get("description") or "")[:200],
             "yes" if (m.get("judge_prompt") or "").strip() else "no",
         ]
@@ -426,6 +447,15 @@ def on_metrics_tab_load(assistant):
     )
 
 
+def _range_visible(mtype: str | None) -> bool:
+    return mtype in ("int", "float")
+
+
+def on_metric_type_change(mtype):
+    show = _range_visible(mtype)
+    return gr.update(visible=show), gr.update(visible=show)
+
+
 def on_metric_select(metric_id, assistant):
     if assistant is None or not metric_id:
         return (
@@ -434,6 +464,8 @@ def on_metric_select(metric_id, assistant):
             gr.update(value="float"),
             gr.update(value="avg"),
             gr.update(value=""),
+            gr.update(value=None, visible=True),
+            gr.update(value=None, visible=True),
             gr.update(value=""),
             "",
         )
@@ -445,23 +477,50 @@ def on_metric_select(metric_id, assistant):
             gr.update(value="float"),
             gr.update(value="avg"),
             gr.update(value=""),
+            gr.update(value=None, visible=True),
+            gr.update(value=None, visible=True),
             gr.update(value=""),
             "Metric not found.",
         )
-    meta_str = json.dumps(m.get("metadata") or {}, indent=2) if m.get("metadata") else ""
+    meta = dict(m.get("metadata") or {})
+    mn = meta.pop("min", None)
+    mx = meta.pop("max", None)
+    meta_str = json.dumps(meta, indent=2) if meta else ""
+    show = _range_visible(m["type"])
     return (
         gr.update(value=m["name"]),
         gr.update(value=m.get("description") or ""),
         gr.update(value=m["type"]),
         gr.update(value=m["aggregation"]),
         gr.update(value=m.get("judge_prompt") or ""),
+        gr.update(value=mn, visible=show),
+        gr.update(value=mx, visible=show),
         gr.update(value=meta_str),
         f"Loaded metric `{m['name']}`.",
     )
 
 
+def _coerce_range(value, mtype: str):
+    if value is None or value == "":
+        return None
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return None
+    return int(v) if mtype == "int" else v
+
+
 def on_metric_save(
-    metric_id, name, description, mtype, aggregation, judge_prompt, metadata_json, assistant
+    metric_id,
+    name,
+    description,
+    mtype,
+    aggregation,
+    judge_prompt,
+    min_value,
+    max_value,
+    metadata_json,
+    assistant,
 ):
     if assistant is None:
         assistant = ChatAssistant()
@@ -475,6 +534,27 @@ def on_metric_save(
     meta, err = _parse_metadata(metadata_json)
     if err:
         return assistant, gr.update(), _metrics_table_html(assistant), err
+    if _range_visible(mtype):
+        mn = _coerce_range(min_value, mtype)
+        mx = _coerce_range(max_value, mtype)
+        if mn is not None and mx is not None and mn > mx:
+            return (
+                assistant,
+                gr.update(),
+                _metrics_table_html(assistant),
+                "Min cannot be greater than max.",
+            )
+        if mn is not None:
+            meta["min"] = mn
+        else:
+            meta.pop("min", None)
+        if mx is not None:
+            meta["max"] = mx
+        else:
+            meta.pop("max", None)
+    else:
+        meta.pop("min", None)
+        meta.pop("max", None)
     jp = (judge_prompt or "").strip() or None
     desc = (description or "").strip()
     if metric_id:
@@ -527,6 +607,8 @@ def on_metric_clear():
         gr.update(value="float"),
         gr.update(value="avg"),
         gr.update(value=""),
+        gr.update(value=None, visible=True),
+        gr.update(value=None, visible=True),
         gr.update(value=""),
         "Form cleared.",
     )
@@ -554,8 +636,19 @@ def build_metrics_tab(assistant_state: gr.State):
                 lines=4,
                 placeholder="Guidance shown to the LLM judge for this metric.",
             )
+            with gr.Row():
+                min_in = gr.Number(
+                    label="Min (optional, int/float only)",
+                    value=None,
+                    visible=True,
+                )
+                max_in = gr.Number(
+                    label="Max (optional, int/float only)",
+                    value=None,
+                    visible=True,
+                )
             metadata_in = gr.Code(
-                label="Metadata (JSON, optional — e.g. min/max/labels)",
+                label="Metadata (JSON, optional — extra fields beyond min/max)",
                 language="json",
                 value="",
                 lines=4,
@@ -570,7 +663,22 @@ def build_metrics_tab(assistant_state: gr.State):
     metric_dd.change(
         fn=on_metric_select,
         inputs=[metric_dd, assistant_state],
-        outputs=[name_in, desc_in, type_in, agg_in, judge_prompt_in, metadata_in, status_md],
+        outputs=[
+            name_in,
+            desc_in,
+            type_in,
+            agg_in,
+            judge_prompt_in,
+            min_in,
+            max_in,
+            metadata_in,
+            status_md,
+        ],
+    )
+    type_in.change(
+        fn=on_metric_type_change,
+        inputs=[type_in],
+        outputs=[min_in, max_in],
     )
     save_btn.click(
         fn=on_metric_save,
@@ -581,6 +689,8 @@ def build_metrics_tab(assistant_state: gr.State):
             type_in,
             agg_in,
             judge_prompt_in,
+            min_in,
+            max_in,
             metadata_in,
             assistant_state,
         ],
@@ -601,6 +711,8 @@ def build_metrics_tab(assistant_state: gr.State):
             type_in,
             agg_in,
             judge_prompt_in,
+            min_in,
+            max_in,
             metadata_in,
             status_md,
         ],
@@ -619,9 +731,21 @@ def _eval_run_choices(assistant: ChatAssistant | None) -> list[tuple[str, str]]:
         return []
     out = []
     for r in assistant.store.list_evaluation_runs():
-        label = f"{r['name']} · {r.get('dataset_name', '?')} · " f"preds={r['prediction_count']}"
+        tag = f" [{r['label']}]" if r.get("label") else ""
+        label = f"{r['name']}{tag} · {r.get('dataset_name', '?')} · preds={r['prediction_count']}"
         out.append((label, r["run_id"]))
     return out
+
+
+def on_eval_run_pick_for_judge(eval_run_id, assistant):
+    """Prefill the judge run name with the evaluation run's label (or name)."""
+    if assistant is None or not eval_run_id:
+        return gr.update()
+    run = assistant.store.get_evaluation_run(eval_run_id)
+    if not run:
+        return gr.update()
+    suggested = (run.get("label") or run.get("name") or "").strip()
+    return gr.update(value=suggested)
 
 
 def _judge_run_choices(assistant: ChatAssistant | None) -> list[tuple[str, str]]:
@@ -764,54 +888,70 @@ def on_create_judge_run(eval_run_id, metric_ids, judge_type, name, assistant):
     )
 
 
-def on_judge_run_select(judge_run_id, assistant):
-    """When a judge run is selected, reset prediction index to 0 and render state."""
+def _build_score_state(assistant, judge_run_id, idx):
+    """Return the shared state dict consumed by the @gr.render scoring view."""
+    empty = {
+        "judge_run_id": None,
+        "prediction_id": None,
+        "idx": 0,
+        "total": 0,
+        "rows": [],
+    }
     if assistant is None or not judge_run_id:
-        return (
-            0,
-            "",
-            "",
-            gr.update(value=[], headers=["Metric", "Type", "Score", "Comment"]),
-            "_Select a judge run._",
-        )
+        return empty
     jr, preds = _get_predictions_for_run(assistant, judge_run_id)
     if not jr or not preds:
-        return (
-            0,
-            "<p><em>No predictions to judge.</em></p>",
-            "",
-            gr.update(value=[], headers=["Metric", "Type", "Score", "Comment"]),
-            _aggregates_html(assistant, judge_run_id),
-        )
-    idx = 0
-    pred = assistant.store.get_prediction(preds[idx]["prediction_id"]) or preds[idx]
-    scores_rows = _scores_rows_for_pred(assistant, judge_run_id, pred, jr["metric_ids"])
-    nav = f"Prediction {idx + 1} / {len(preds)}"
-    return (
-        idx,
-        _prediction_view_html(pred),
-        nav,
-        gr.update(value=scores_rows, headers=["Metric", "Type", "Score", "Comment"]),
-        _aggregates_html(assistant, judge_run_id),
-    )
-
-
-def _scores_rows_for_pred(assistant, judge_run_id, pred, metric_ids):
+        return {**empty, "judge_run_id": judge_run_id}
+    i = max(0, min(len(preds) - 1, int(idx or 0)))
+    pred_summary = preds[i]
+    pred = assistant.store.get_prediction(pred_summary["prediction_id"]) or pred_summary
     existing = assistant.store.get_results_for_prediction(judge_run_id, pred["prediction_id"])
     rows = []
-    for mid in metric_ids:
+    for mid in jr["metric_ids"]:
         metric = assistant.store.get_metric(mid)
         if not metric:
             continue
         existing_r = existing.get(mid)
+        meta = metric.get("metadata") or {}
         score_val = (
             ""
             if existing_r is None
             else _format_score_for_type(existing_r["score"], metric["type"])
         )
         comment = (existing_r.get("comment") if existing_r else "") or ""
-        rows.append([metric["name"], metric["type"], score_val, comment])
-    return rows
+        rows.append(
+            {
+                "metric_id": mid,
+                "name": metric["name"],
+                "type": metric["type"],
+                "min": meta.get("min"),
+                "max": meta.get("max"),
+                "score": score_val,
+                "comment": comment,
+            }
+        )
+    return {
+        "judge_run_id": judge_run_id,
+        "prediction_id": pred["prediction_id"],
+        "idx": i,
+        "total": len(preds),
+        "rows": rows,
+        "pred_html": _prediction_view_html(pred),
+        "nav": f"Prediction {i + 1} / {len(preds)}",
+    }
+
+
+def on_judge_run_select(judge_run_id, assistant):
+    state = _build_score_state(assistant, judge_run_id, 0)
+    pred_html = state.get("pred_html") or "<p><em>No predictions to judge.</em></p>"
+    nav = state.get("nav") or ""
+    return (
+        state,
+        state["idx"],
+        pred_html,
+        nav,
+        _aggregates_html(assistant, judge_run_id) if judge_run_id else "_Select a judge run._",
+    )
 
 
 def _format_score_for_type(score, mtype):
@@ -825,21 +965,11 @@ def _format_score_for_type(score, mtype):
 
 
 def on_nav_prediction(direction, idx, judge_run_id, assistant):
-    if assistant is None or not judge_run_id:
-        return idx, "", "", gr.update()
-    jr, preds = _get_predictions_for_run(assistant, judge_run_id)
-    if not jr or not preds:
-        return idx, "<p><em>No predictions.</em></p>", "", gr.update()
-    new_idx = max(0, min(len(preds) - 1, int(idx or 0) + int(direction)))
-    pred = assistant.store.get_prediction(preds[new_idx]["prediction_id"]) or preds[new_idx]
-    nav = f"Prediction {new_idx + 1} / {len(preds)}"
-    rows = _scores_rows_for_pred(assistant, judge_run_id, pred, jr["metric_ids"])
-    return (
-        new_idx,
-        _prediction_view_html(pred),
-        nav,
-        gr.update(value=rows, headers=["Metric", "Type", "Score", "Comment"]),
-    )
+    new_idx = int(idx or 0) + int(direction)
+    state = _build_score_state(assistant, judge_run_id, new_idx)
+    pred_html = state.get("pred_html") or "<p><em>No predictions.</em></p>"
+    nav = state.get("nav") or ""
+    return state, state["idx"], pred_html, nav
 
 
 def _parse_manual_score(raw, mtype):
@@ -857,41 +987,42 @@ def _parse_manual_score(raw, mtype):
     return v, None
 
 
-def on_save_manual_scores(idx, judge_run_id, scores_rows, assistant):
-    if assistant is None or not judge_run_id:
-        return "No judge run selected.", gr.update(), gr.update()
-    jr, preds = _get_predictions_for_run(assistant, judge_run_id)
-    if not jr or not preds:
-        return "No predictions.", gr.update(), gr.update()
-    i = max(0, min(len(preds) - 1, int(idx or 0)))
-    pred = preds[i]
-    # scores_rows is a list of [name, type, score_str, comment]
-    rows_iter = scores_rows if isinstance(scores_rows, list) else []
-    metric_ids = jr["metric_ids"]
-    # rebuild name→metric_id in the same order used for rendering
-    metrics_in_order: list[dict] = []
-    for mid in metric_ids:
-        m = assistant.store.get_metric(mid)
-        if m:
-            metrics_in_order.append(m)
+def _save_manual_scores_from_state(state, score_values, comment_values, assistant):
+    """Save the score/comment values for the prediction described by `state`."""
+    if assistant is None or not state or not state.get("judge_run_id"):
+        return "No judge run selected."
+    judge_run_id = state["judge_run_id"]
+    jr = assistant.store.get_judge_run(judge_run_id)
+    if not jr:
+        return "Judge run not found."
+    pred = assistant.store.get_prediction(state["prediction_id"])
+    if not pred:
+        return "Prediction not found."
+    rows = state.get("rows") or []
     saved = 0
     errors: list[str] = []
-    for row, metric in zip(rows_iter, metrics_in_order):
-        if not isinstance(row, (list, tuple)) or len(row) < 4:
-            continue
-        _name, mtype, score_raw, comment = row[0], row[1], row[2], row[3]
-        score, err = _parse_manual_score(score_raw, mtype or metric["type"])
+    for row, score_raw, comment in zip(rows, score_values, comment_values):
+        score, err = _parse_manual_score(score_raw, row["type"])
         if err:
-            errors.append(f"{metric['name']}: {err}")
+            errors.append(f"{row['name']}: {err}")
             continue
         if score is None:
             continue
+        # Clamp to range if defined
+        if row["type"] in ("int", "float"):
+            mn, mx = row.get("min"), row.get("max")
+            if mn is not None and score < float(mn):
+                errors.append(f"{row['name']}: {score} below min {mn}.")
+                continue
+            if mx is not None and score > float(mx):
+                errors.append(f"{row['name']}: {score} above max {mx}.")
+                continue
         assistant.store.upsert_evaluation_result(
             judge_run_id=judge_run_id,
             evaluation_run_id=jr["evaluation_run_id"],
             prediction_id=pred["prediction_id"],
             annotation_id=pred["annotation_id"],
-            metric_id=metric["metric_id"],
+            metric_id=row["metric_id"],
             score=score,
             judge_type="manual",
             comment=(str(comment).strip() or None) if comment is not None else None,
@@ -901,11 +1032,7 @@ def on_save_manual_scores(idx, judge_run_id, scores_rows, assistant):
     msg = f"Saved {saved} score(s)."
     if errors:
         msg += " Errors: " + "; ".join(errors)
-    return (
-        msg,
-        _aggregates_html(assistant, judge_run_id),
-        gr.update(choices=_judge_run_choices(assistant), value=judge_run_id),
-    )
+    return msg
 
 
 async def on_run_llm_judge(judge_run_id, assistant):
@@ -989,23 +1116,79 @@ def build_judge_run_tab(assistant_state: gr.State):
             with gr.Row():
                 prev_btn = gr.Button("◀ Prev", size="sm")
                 next_btn = gr.Button("Next ▶", size="sm")
-                save_btn = gr.Button("Save scores", variant="primary", size="sm")
             pred_idx = gr.State(value=0)
+            score_state = gr.State(
+                value={"judge_run_id": None, "prediction_id": None, "idx": 0, "rows": []}
+            )
             pred_html = gr.HTML(value="")
-            gr.Markdown(
-                "### Scores — edit the *Score* and *Comment* columns, then click **Save scores**"
-            )
-            scores_df = gr.Dataframe(
-                headers=["Metric", "Type", "Score", "Comment"],
-                datatype=["str", "str", "str", "str"],
-                interactive=True,
-                wrap=True,
-            )
+            gr.Markdown("### Scores")
+
+            @gr.render(inputs=[score_state])
+            def render_scores(state):
+                if not state or not state.get("rows"):
+                    if state and state.get("judge_run_id"):
+                        gr.Markdown(
+                            "_No metrics on this judge run, or no successful predictions to score._"
+                        )
+                    else:
+                        gr.Markdown("_Select a judge run to start scoring._")
+                    return
+                score_inputs = []
+                comment_inputs = []
+                for row in state["rows"]:
+                    range_hint = ""
+                    if row["type"] in ("int", "float"):
+                        mn, mx = row.get("min"), row.get("max")
+                        if mn is not None or mx is not None:
+                            range_hint = (
+                                f" (range: {'-∞' if mn is None else mn} – "
+                                f"{'∞' if mx is None else mx})"
+                            )
+                    with gr.Row():
+                        gr.Markdown(
+                            f"**{row['name']}** _({row['type']})_{range_hint}",
+                            min_width=180,
+                        )
+                        s = gr.Textbox(
+                            value=row["score"],
+                            label="Score",
+                            scale=1,
+                            interactive=True,
+                        )
+                        c = gr.Textbox(
+                            value=row["comment"],
+                            label="Comment",
+                            scale=2,
+                            interactive=True,
+                        )
+                        score_inputs.append(s)
+                        comment_inputs.append(c)
+
+                row_save_btn = gr.Button("Save scores", variant="primary", size="sm")
+
+                def _do_save(state_in, assistant_in, *vals):
+                    n = len(state_in.get("rows") or [])
+                    scores = list(vals[:n])
+                    comments = list(vals[n : 2 * n])
+                    msg = _save_manual_scores_from_state(state_in, scores, comments, assistant_in)
+                    aggs = _aggregates_html(assistant_in, state_in.get("judge_run_id"))
+                    return msg, aggs
+
+                row_save_btn.click(
+                    fn=_do_save,
+                    inputs=[score_state, assistant_state, *score_inputs, *comment_inputs],
+                    outputs=[jr_status_md, aggregates_html],
+                )
 
     create_jr_btn.click(
         fn=on_create_judge_run,
         inputs=[eval_run_dd, metrics_multi, judge_type_rd, jr_name, assistant_state],
         outputs=[assistant_state, judge_run_dd, jr_status_md],
+    )
+    eval_run_dd.change(
+        fn=on_eval_run_pick_for_judge,
+        inputs=[eval_run_dd, assistant_state],
+        outputs=[jr_name],
     )
     refresh_btn.click(
         fn=on_judge_refresh,
@@ -1015,22 +1198,17 @@ def build_judge_run_tab(assistant_state: gr.State):
     judge_run_dd.change(
         fn=on_judge_run_select,
         inputs=[judge_run_dd, assistant_state],
-        outputs=[pred_idx, pred_html, nav_md, scores_df, aggregates_html],
+        outputs=[score_state, pred_idx, pred_html, nav_md, aggregates_html],
     )
     prev_btn.click(
         fn=lambda idx, jr, a: on_nav_prediction(-1, idx, jr, a),
         inputs=[pred_idx, judge_run_dd, assistant_state],
-        outputs=[pred_idx, pred_html, nav_md, scores_df],
+        outputs=[score_state, pred_idx, pred_html, nav_md],
     )
     next_btn.click(
         fn=lambda idx, jr, a: on_nav_prediction(1, idx, jr, a),
         inputs=[pred_idx, judge_run_dd, assistant_state],
-        outputs=[pred_idx, pred_html, nav_md, scores_df],
-    )
-    save_btn.click(
-        fn=on_save_manual_scores,
-        inputs=[pred_idx, judge_run_dd, scores_df, assistant_state],
-        outputs=[jr_status_md, aggregates_html, judge_run_dd],
+        outputs=[score_state, pred_idx, pred_html, nav_md],
     )
     run_llm_btn.click(
         fn=on_run_llm_judge,

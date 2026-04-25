@@ -27,6 +27,7 @@ Doc2Agent transforms static PDF documents into interactive knowledge bases. Usin
 - **Multi-page UI** with a navbar:
   - **Chat** — Q&A with the agents (with a one-click "clean empty sessions" button)
   - **Datasets** — two tabs: *Live Chat Datasets* (turn chat sessions into eval sets) and *Annotate Documents* (PDF.js viewer + span staging + push annotation sets into a dataset)
+  - **Dashboard** — two tabs: *Data* (documents, annotation sets, datasets) and *Evaluations* (runs, judge runs, metric rollups, failure inspection)
 
 ---
 
