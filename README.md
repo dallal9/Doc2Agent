@@ -27,7 +27,9 @@ Doc2Agent transforms static PDF documents into interactive knowledge bases. Usin
 - **Multi-page UI** with a navbar:
   - **Chat** — Q&A with the agents (with a one-click "clean empty sessions" button)
   - **Datasets** — two tabs: *Live Chat Datasets* (turn chat sessions into eval sets) and *Annotate Documents* (PDF.js viewer + span staging + push annotation sets into a dataset)
-  - **Dashboard** — two tabs: *Data* (documents, annotation sets, datasets) and *Evaluations* (runs, judge runs, metric rollups, failure inspection)
+  - **Evaluation** — two tabs: *Execution Run* (run a dataset against the chat agent, one-turn per annotation, store predictions) and *Judge Run* (manual or LLM-as-judge scoring per metric, with aggregation)
+  - **Config** — *Metrics* tab: CRUD for reusable metrics (`bool | int | float`, aggregation, optional judge prompt, optional min/max range)
+  - **Dashboard** — two tabs: *Data* (documents, annotation sets, datasets) and *Evaluations* (runs, judge runs, per-judge-run pivot of metric scores, global metric rollup, failure inspection: failed predictions, low-score judgments, missing document references)
 
 ---
 
@@ -62,9 +64,12 @@ cp env.example .env
 make run
 ```
 
-5. **Access the web UI** (typically `http://localhost:7860`). The home page shows a light/dark-aware logo, a short tagline, and **Chat** / **Datasets** buttons; the top bar links to the same two routes:
+5. **Access the web UI** (typically `http://localhost:7860`). The home page shows a light/dark-aware logo and a short tagline; the navbar links to:
    - **Chat** (`/chat`) — Q&A with the agents
-   - **Datasets** (`/datasets`) — two tabs: build datasets from live chat sessions or from manually annotated documents
+   - **Datasets** (`/datasets`) — build datasets from live chat sessions or from manually annotated documents
+   - **Evaluation** (`/evaluation`) — run datasets against the chat agent and score predictions
+   - **Config** (`/config`) — define reusable metrics
+   - **Dashboard** (`/dashboard`) — system overview, run history, metric rollups, failure inspection
 
 ---
 
@@ -92,6 +97,13 @@ make run
 - **Annotations**: Same SQLite DB as chat; separate tables for sets, Q&A rows, and spans
 - **Cache management**: Built-in cache flushing and automatic cleanup
 
+### Evaluation & Judging
+
+- **Execution Run**: pick a dataset, name the run, optionally override agent/backend config; the runner replays each annotation as a one-turn query against the existing chat pipeline and stores one `EvaluationPrediction` per annotation (agent answer, thoughts, document reference, status, error).
+- **Metrics**: define reusable `Metric`s (`bool | int | float`, aggregation `avg | sum | min | max`, optional `judge_prompt`, optional min/max range).
+- **Judge Run**: pick an evaluation run + metrics, then either score predictions manually (per-prediction navigation, score + comment per metric) or run an LLM-as-judge that returns `{score, reason}` per prediction × metric. Aggregates roll up per metric using its declared aggregation.
+- **Reproducibility**: each `EvaluationRun` persists the agent config snapshot used.
+
 ### User Interface
 
 - **Gradio multi-page app** with a navbar:
@@ -99,6 +111,14 @@ make run
   - **Datasets** page:
     - *Live Chat Datasets* tab: pick a chat session, choose Auto/Manual, export turns as `Annotation`s into a `Dataset`. One dataset can aggregate multiple sessions.
     - *Annotate Documents* tab: PDF.js viewer + span staging (text / page-based), Q&A capture, JSON export. Push the whole annotation set into an existing or new dataset — stored the same way as chat-exported ones (annotations + spans + doc reference in SQLite).
+  - **Evaluation** page:
+    - *Execution Run* tab: dataset → run → predictions table.
+    - *Judge Run* tab: manual scoring UI with per-prediction navigation, plus LLM-as-judge mode.
+  - **Config** page:
+    - *Metrics* tab: create/edit/delete metric definitions.
+  - **Dashboard** page:
+    - *Data* tab: KPIs and tables for documents, annotation sets, datasets.
+    - *Evaluations* tab: KPIs, evaluation runs, judge runs, per-judge-run pivot, global metric rollup, and failure inspection (failed predictions, low-score judgments, predictions missing document references).
 - **Document upload**: PDF upload with progress tracking (chat may enrich pages; Annotate parses only)
 - **Document selection**: Switch between multiple cached documents
 - **Query history**: View and manage cached queries per document
@@ -231,7 +251,7 @@ For detailed architecture documentation, see [docs/architecture.md](docs/archite
 
 ## Tech Stack
 
-- **UI Framework**: [Gradio](https://github.com/gradio-app/gradio) — multi-page app (Chat / Datasets) with client-side PDF rendering via PDF.js
+- **UI Framework**: [Gradio](https://github.com/gradio-app/gradio) — multi-page app (Chat / Datasets / Evaluation / Config / Dashboard) with client-side PDF rendering via PDF.js
 - **Agent Framework**: [pydantic-ai](https://github.com/pydantic/pydantic-ai) - Type-safe AI agents
 - **LLM Backend**: [Ollama](https://ollama.com/) - Local LLM inference
 - **PDF Processing**: [PyMuPDF (fitz)](https://pymupdf.readthedocs.io/) - High-performance PDF parsing
@@ -246,9 +266,11 @@ For detailed architecture documentation, see [docs/architecture.md](docs/archite
 ```
 Doc2Agent/
 ├── app/
-│   ├── gradio_app.py             # Gradio UI entry point (homepage + Chat/Datasets routes)
-│   ├── annotation_tab.py         # Annotate Documents tab (lives on the Datasets page)
-│   ├── datasets_tab.py           # Live Chat Datasets tab (lives on the Datasets page)
+│   ├── gradio_app.py             # Gradio UI entry point (homepage + Chat/Datasets/Evaluation/Config/Dashboard routes)
+│   ├── annotation_tab.py         # Annotate Documents tab (Datasets page)
+│   ├── datasets_tab.py           # Live Chat Datasets tab (Datasets page)
+│   ├── evaluation_tab.py         # Execution Run, Metrics, and Judge Run tabs
+│   ├── dashboard_tab.py          # Data and Evaluations dashboard tabs
 │   ├── static/annotator.js       # PDF.js viewer + span bridge
 │   └── utils.py                  # UI utilities (framework-agnostic)
 ├── src/
@@ -262,13 +284,18 @@ Doc2Agent/
 │   │   ├── agents.json          # Agent configurations
 │   │   ├── prompts.json         # System prompts
 │   │   └── schemas.py           # Config schemas
+│   ├── annotation/              # Annotation set / span helpers
 │   ├── chat/
 │   │   └── assistant.py         # Chat orchestration
+│   ├── evaluation/
+│   │   ├── runner.py            # Evaluation run executor (one-turn replay)
+│   │   └── judge.py             # Manual + LLM-as-judge scoring
 │   ├── schemas/
 │   │   ├── document.py          # Document and page schemas
-│   │   └── annotation.py        # Annotation / span models
+│   │   ├── annotation.py        # Annotation / span models
+│   │   └── evaluation.py        # EvaluationRun / Prediction / Metric / JudgeRun / Result models
 │   ├── storage/
-│   │   └── sqlite_store.py      # SQLite persistence layer
+│   │   └── sqlite_store.py      # SQLite persistence layer (chat, annotations, datasets, eval, judge)
 │   ├── tools/
 │   │   ├── pdf_parser.py        # PDFParser (PyMuPDF)
 │   │   ├── pdf.py               # Legacy PDF tools
@@ -343,6 +370,26 @@ Open **Datasets** from the navbar.
 A single dataset can aggregate turns from multiple sessions. The preview pane shows current contents and offers a JSON export.
 
 **Annotate Documents** tab — pick or upload a PDF, create/select an **annotation set**, stage spans (text selection or page), enter Q&A, **Save**. Then, in the same tab's sidebar, either select an existing dataset and click **Add set → dataset**, or type a name under **Or create new dataset** and click **Create & add set**. Annotations + spans + the doc reference are stored alongside chat-exported ones.
+
+### Evaluation page
+
+**Execution Run** tab — pick a dataset, name the run, optionally override agent config, click **Run**. The runner replays each annotation as a one-turn query against the existing chat pipeline (no prior history) using the document referenced by that annotation. Each prediction is stored with status (`success | failed | skipped`), the agent answer, optional thoughts, and any error message. The results table shows question, expected answer, agent answer, document, and status side by side.
+
+**Judge Run** tab — pick an evaluation run and one or more metrics, then choose **manual** or **llm**:
+- *Manual*: navigate prediction-by-prediction, enter a score and optional comment per metric.
+- *LLM*: a judge model receives the metric description, optional metric-specific judge prompt, the question, expected answer, agent answer, and any evidence/context, and returns a structured `{score, reason}` per prediction × metric.
+
+Aggregates per metric (using the metric's declared aggregation) are shown live, along with judged / total counts.
+
+### Config page
+
+**Metrics** tab — create reusable metrics with name, description, type (`bool | int | float`), aggregation (`avg | sum | min | max`), optional min/max range, and an optional LLM judge prompt. Metrics created here are reusable across judge runs.
+
+### Dashboard page
+
+**Data** tab — KPIs (documents, annotation sets, annotations, datasets) plus searchable, scrollable tables for each.
+
+**Evaluations** tab — KPIs (runs, predictions, judge runs, judgments, failed runs, metrics), evaluation runs table, judge runs table, a per-judge-run × per-metric pivot, a global metric rollup, and a failure-inspection block (failed predictions, low-score judgments, predictions missing document references).
 
 ### Advanced Features
 
