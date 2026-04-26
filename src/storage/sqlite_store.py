@@ -558,7 +558,9 @@ class SQLiteStore:
                  WHERE f.doc_id = ? AND pages_fts MATCH ?
                  ORDER BY rank LIMIT ?"""
         try:
-            return [self._row_to_page(row) for row in self.conn.execute(sql, (doc_id, query, limit))]
+            return [
+                self._row_to_page(row) for row in self.conn.execute(sql, (doc_id, query, limit))
+            ]
         except sqlite3.DatabaseError as e:
             msg = str(e).lower()
             if "fts5" not in msg and "missing row" not in msg:
@@ -567,7 +569,9 @@ class SQLiteStore:
                 "search_text hit FTS5 drift (%s); healing and retrying", e
             )
             self._heal_pages_fts()
-            return [self._row_to_page(row) for row in self.conn.execute(sql, (doc_id, query, limit))]
+            return [
+                self._row_to_page(row) for row in self.conn.execute(sql, (doc_id, query, limit))
+            ]
 
     def get_document_by_path(self, file_path: str) -> DocumentMetadata | None:
         """Look up document by file path for cache checking."""

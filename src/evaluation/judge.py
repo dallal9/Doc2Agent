@@ -49,9 +49,7 @@ def _resolve_judge_agent_config(
     """Resolve (model_string, backend_name) for the judge agent."""
     cfg = assistant.config
     agent_cfg = (
-        cfg.agents.get("judge")
-        or cfg.agents.get("reviewer")
-        or next(iter(cfg.agents.values()))
+        cfg.agents.get("judge") or cfg.agents.get("reviewer") or next(iter(cfg.agents.values()))
     )
     backend_name = backend_override or agent_cfg.backend
     if backend_name not in cfg.backends:

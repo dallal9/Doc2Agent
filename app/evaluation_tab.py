@@ -75,9 +75,7 @@ def _auto_run_name_from_eval_run(
     run = assistant.store.get_evaluation_run(eval_run_id)
     if not run:
         return ""
-    return _auto_run_name_from_dataset(
-        run.get("dataset_id"), keyword, assistant, kind="judge"
-    )
+    return _auto_run_name_from_dataset(run.get("dataset_id"), keyword, assistant, kind="judge")
 
 
 # ---- choice builders ------------------------------------------------------
@@ -920,9 +918,7 @@ def _judge_default_cfg(assistant: ChatAssistant | None) -> dict:
         return {"model": "", "backend": ""}
     cfg = assistant.config
     agent_cfg = (
-        cfg.agents.get("judge")
-        or cfg.agents.get("reviewer")
-        or next(iter(cfg.agents.values()))
+        cfg.agents.get("judge") or cfg.agents.get("reviewer") or next(iter(cfg.agents.values()))
     )
     return {"model": agent_cfg.model, "backend": agent_cfg.backend}
 
@@ -1117,9 +1113,7 @@ async def on_run_llm_judge(judge_run_id, assistant):
         assistant = ChatAssistant()
     if not judge_run_id:
         return assistant, "Select a judge run.", gr.update(), gr.update()
-    snap = (assistant.store.get_judge_run(judge_run_id) or {}).get(
-        "judge_config_snapshot"
-    ) or {}
+    snap = (assistant.store.get_judge_run(judge_run_id) or {}).get("judge_config_snapshot") or {}
     try:
         summary = await run_llm_judge(
             assistant=assistant,
@@ -1328,9 +1322,7 @@ def build_judge_run_tab(assistant_state: gr.State):
                             )
                     with gr.Row():
                         with gr.Column(min_width=180, scale=0):
-                            gr.Markdown(
-                                f"**{row['name']}** _({row['type']})_{range_hint}"
-                            )
+                            gr.Markdown(f"**{row['name']}** _({row['type']})_{range_hint}")
                         s = gr.Textbox(
                             value=row["score"],
                             label="Score",
