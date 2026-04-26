@@ -23,6 +23,7 @@ from app.evaluation_tab import (
     on_metrics_tab_load,
 )
 from app.evaluation_tab import on_tab_load as on_evaluation_tab_load
+from app.system_tab import build_system_tab
 from app.utils import ChatResult, render_chat_with_cache
 from src.agents import run_agent
 from src.chat import ChatAssistant
@@ -796,6 +797,8 @@ def create_app() -> gr.Blocks:
         with gr.Tabs():
             with gr.Tab("Metrics"):
                 metric_dd, metrics_table, metrics_status = build_metrics_tab(cfg_assistant_state)
+            with gr.Tab("System"):
+                build_system_tab(cfg_assistant_state)
 
         config_page.load(
             fn=on_metrics_tab_load,

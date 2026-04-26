@@ -11,6 +11,7 @@ Supports run-time configuration:
 from __future__ import annotations
 
 import asyncio
+import os
 import random
 import re
 import time
@@ -38,9 +39,40 @@ DEFAULT_CONFIG: dict[str, Any] = {
 }
 
 
+def _env_int(name: str, default: int | None) -> int | None:
+    raw = os.getenv(name)
+    if raw is None or raw == "":
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None or raw == "":
+        return default
+    return raw.strip().lower() in ("1", "true", "yes", "on")
+
+
+def _env_defaults() -> dict[str, Any]:
+    """Read evaluation run defaults from env. Re-read each call so live updates apply."""
+    mode = os.getenv("EVAL_CONTEXT_MODE", "full_doc") or "full_doc"
+    if mode not in CONTEXT_MODES:
+        mode = "full_doc"
+    return {
+        "concurrency": _env_int("EVAL_CONCURRENCY", 1) or 1,
+        "max_samples": _env_int("EVAL_MAX_SAMPLES", None),
+        "shuffle": _env_bool("EVAL_SHUFFLE", False),
+        "seed": _env_int("EVAL_SEED", None),
+        "context_mode": mode,
+    }
+
+
 def normalize_config(config: dict | None) -> dict:
-    """Merge user config over defaults and coerce types. Unknown keys pass through."""
-    cfg = {**DEFAULT_CONFIG, **(config or {})}
+    """Merge user config over env-derived defaults and coerce types."""
+    cfg = {**_env_defaults(), **(config or {})}
     try:
         cfg["concurrency"] = max(1, int(cfg.get("concurrency") or 1))
     except (TypeError, ValueError):
