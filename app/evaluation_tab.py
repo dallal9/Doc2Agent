@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import html
 import json
+import os
 
 import gradio as gr
 
@@ -851,7 +852,22 @@ def on_judge_tab_load(assistant):
     )
 
 
-def on_create_judge_run(eval_run_id, metric_ids, judge_type, name, assistant):
+def _judge_default_cfg(assistant: ChatAssistant | None) -> dict:
+    """Return the default {model, backend} for the judge agent."""
+    if assistant is None:
+        return {"model": "", "backend": ""}
+    cfg = assistant.config
+    agent_cfg = (
+        cfg.agents.get("judge")
+        or cfg.agents.get("reviewer")
+        or next(iter(cfg.agents.values()))
+    )
+    return {"model": agent_cfg.model, "backend": agent_cfg.backend}
+
+
+def on_create_judge_run(
+    eval_run_id, metric_ids, judge_type, name, model, backend, concurrency, assistant
+):
     if assistant is None:
         assistant = ChatAssistant()
     if not eval_run_id:
@@ -859,16 +875,31 @@ def on_create_judge_run(eval_run_id, metric_ids, judge_type, name, assistant):
     if not metric_ids:
         return assistant, gr.update(), "Select at least one metric."
     name = (name or "").strip() or "Judge run"
+
+    defaults = _judge_default_cfg(assistant)
+    model = (model or "").strip() or defaults["model"]
+    backend = (backend or "").strip() or defaults["backend"]
+    try:
+        concurrency_int = max(1, int(concurrency or 1))
+    except (TypeError, ValueError):
+        concurrency_int = 1
+
+    snapshot = {
+        "model": model,
+        "backend": backend,
+        "concurrency": concurrency_int,
+    }
     jr_id = assistant.store.create_judge_run(
         evaluation_run_id=eval_run_id,
         name=name,
         judge_type=judge_type or "manual",
         metric_ids=list(metric_ids),
+        judge_config_snapshot=snapshot,
     )
     return (
         assistant,
         gr.update(choices=_judge_run_choices(assistant), value=jr_id),
-        f"Created judge run `{name}`.",
+        f"Created judge run `{name}` (model={model}, backend={backend}, concurrency={concurrency_int}).",
     )
 
 
@@ -1024,8 +1055,17 @@ async def on_run_llm_judge(judge_run_id, assistant):
         assistant = ChatAssistant()
     if not judge_run_id:
         return assistant, "Select a judge run.", gr.update(), gr.update()
+    snap = (assistant.store.get_judge_run(judge_run_id) or {}).get(
+        "judge_config_snapshot"
+    ) or {}
     try:
-        summary = await run_llm_judge(assistant=assistant, judge_run_id=judge_run_id)
+        summary = await run_llm_judge(
+            assistant=assistant,
+            judge_run_id=judge_run_id,
+            model_override=snap.get("model") or None,
+            backend_override=snap.get("backend") or None,
+            concurrency=snap.get("concurrency"),
+        )
         msg = (
             f"LLM judge {summary['status']} — success: {summary.get('success', 0)} · "
             f"failed: {summary.get('failed', 0)} / {summary.get('total', 0)}"
@@ -1077,9 +1117,29 @@ def build_judge_run_tab(assistant_state: gr.State):
                 metrics_multi = gr.Dropdown(
                     label="Metrics", choices=[], multiselect=True, interactive=True, scale=3
                 )
-                gr.Button("Manage metrics →", link="../config", size="sm", scale=1)
+                gr.Button("Manage metrics →", link="../_config", size="sm", scale=1)
             judge_type_rd = gr.Radio(label="Judge type", choices=["manual", "llm"], value="manual")
             jr_name = gr.Textbox(label="Judge run name", placeholder="e.g. manual-2026-04-25")
+
+            with gr.Accordion("Judge config (LLM judge only)", open=False):
+                judge_model_tb = gr.Textbox(
+                    label="Model",
+                    placeholder="leave empty to use the `judge` agent default",
+                )
+                judge_backend_dd = gr.Dropdown(
+                    label="Backend",
+                    choices=["", "local", "openrouter"],
+                    value="",
+                    allow_custom_value=True,
+                )
+                judge_concurrency_n = gr.Number(
+                    label="Concurrency",
+                    value=int(os.getenv("JUDGE_CONCURRENCY", "1") or "1"),
+                    precision=0,
+                    minimum=1,
+                    info="Parallel (prediction × metric) judgments. Keep at 1 for local Ollama.",
+                )
+
             create_jr_btn = gr.Button("Create judge run", variant="primary")
 
             gr.Markdown("### Existing judge runs")
@@ -1166,7 +1226,16 @@ def build_judge_run_tab(assistant_state: gr.State):
 
     create_jr_btn.click(
         fn=on_create_judge_run,
-        inputs=[eval_run_dd, metrics_multi, judge_type_rd, jr_name, assistant_state],
+        inputs=[
+            eval_run_dd,
+            metrics_multi,
+            judge_type_rd,
+            jr_name,
+            judge_model_tb,
+            judge_backend_dd,
+            judge_concurrency_n,
+            assistant_state,
+        ],
         outputs=[assistant_state, judge_run_dd, jr_status_md],
     )
     eval_run_dd.change(

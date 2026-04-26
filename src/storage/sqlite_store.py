@@ -206,6 +206,7 @@ CREATE TABLE IF NOT EXISTS judge_runs (
     judge_type TEXT NOT NULL CHECK(judge_type IN ('manual','llm')),
     metric_ids_json TEXT NOT NULL DEFAULT '[]',
     status TEXT NOT NULL DEFAULT 'pending',
+    judge_config_snapshot TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     completed_at TIMESTAMP,
     FOREIGN KEY (evaluation_run_id) REFERENCES evaluation_runs(run_id) ON DELETE CASCADE
@@ -307,6 +308,11 @@ class SQLiteStore:
             self.conn.execute(
                 "ALTER TABLE evaluation_predictions ADD COLUMN execution_time_ms INTEGER"
             )
+
+        cur = self.conn.execute("PRAGMA table_info(judge_runs)")
+        jr_cols = {row[1] for row in cur.fetchall()}
+        if jr_cols and "judge_config_snapshot" not in jr_cols:
+            self.conn.execute("ALTER TABLE judge_runs ADD COLUMN judge_config_snapshot TEXT")
 
         # Create query_cache table if it doesn't exist
         cur = self.conn.execute(
@@ -1179,18 +1185,21 @@ class SQLiteStore:
         name: str,
         judge_type: str,
         metric_ids: list[str],
+        judge_config_snapshot: dict | None = None,
     ) -> str:
         judge_run_id = str(uuid.uuid4())
         self.conn.execute(
             """INSERT INTO judge_runs
-               (judge_run_id, evaluation_run_id, name, judge_type, metric_ids_json, status)
-               VALUES (?, ?, ?, ?, ?, 'pending')""",
+               (judge_run_id, evaluation_run_id, name, judge_type, metric_ids_json,
+                status, judge_config_snapshot)
+               VALUES (?, ?, ?, ?, ?, 'pending', ?)""",
             (
                 judge_run_id,
                 evaluation_run_id,
                 name,
                 judge_type,
                 json.dumps(metric_ids or []),
+                json.dumps(judge_config_snapshot) if judge_config_snapshot else None,
             ),
         )
         self.conn.commit()
@@ -1222,6 +1231,12 @@ class SQLiteStore:
             d["metric_ids"] = json.loads(d.pop("metric_ids_json") or "[]")
         except json.JSONDecodeError:
             d["metric_ids"] = []
+        snap_raw = d.get("judge_config_snapshot")
+        if snap_raw:
+            try:
+                d["judge_config_snapshot"] = json.loads(snap_raw)
+            except json.JSONDecodeError:
+                d["judge_config_snapshot"] = None
         return d
 
     def list_judge_runs(self, evaluation_run_id: str | None = None) -> list[dict]:

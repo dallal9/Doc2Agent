@@ -7,6 +7,8 @@ returns / retrieved passages), and the annotation's evidence spans.
 
 from __future__ import annotations
 
+import asyncio
+import os
 from typing import Any, Awaitable, Callable
 
 from pydantic import BaseModel, Field
@@ -21,28 +23,39 @@ logger = setup_logging("evaluation_judge")
 ProgressCallback = Callable[[int, int, str], Awaitable[None] | None]
 
 
-JUDGE_SYSTEM_PROMPT = (
-    "You are an evaluation judge. Score the agent's answer against the given metric. "
-    "You must return a JSON object with fields `score` (number) and `reason` (short string). "
-    "Use the evidence (document spans, agent context, agent think trace) to justify your score. "
-    "Be concise and factual."
-)
-
-
 class JudgeOutput(BaseModel):
     score: float = Field(description="Numeric score; for bool metrics use 0 or 1.")
     reason: str = Field(default="", description="Short explanation for the score.")
 
 
-def _create_judge_agent(assistant: ChatAssistant) -> Agent[None, JudgeOutput]:
-    """Build a one-shot judge agent reusing the reviewer's backend/model."""
+def _create_judge_agent(
+    assistant: ChatAssistant,
+    *,
+    model_override: str | None = None,
+    backend_override: str | None = None,
+) -> Agent[None, JudgeOutput]:
+    """Build a one-shot judge agent.
+
+    Prefers the dedicated `judge` agent config; falls back to `reviewer` for
+    backward compatibility with older `agents.json` files. `model_override` and
+    `backend_override` let the Judge Run UI override per-run without mutating
+    the config file.
+    """
     cfg = assistant.config
-    agent_cfg = cfg.agents.get("reviewer") or next(iter(cfg.agents.values()))
-    backend_cfg = cfg.backends[agent_cfg.backend]
-    model_string = get_model_string(backend_cfg, agent_cfg.model)
+    agent_cfg = (
+        cfg.agents.get("judge")
+        or cfg.agents.get("reviewer")
+        or next(iter(cfg.agents.values()))
+    )
+    backend_name = backend_override or agent_cfg.backend
+    if backend_name not in cfg.backends:
+        raise ValueError(f"Unknown backend for judge: {backend_name}")
+    backend_cfg = cfg.backends[backend_name]
+    model_string = get_model_string(backend_cfg, model_override or agent_cfg.model)
+    system_prompt = assistant.prompts.judge
     agent: Agent[None, JudgeOutput] = Agent(
         model_string,
-        system_prompt=JUDGE_SYSTEM_PROMPT,
+        system_prompt=system_prompt,
         output_type=JudgeOutput,
     )
     return agent
@@ -154,8 +167,15 @@ async def run_llm_judge(
     assistant: ChatAssistant,
     judge_run_id: str,
     on_progress: ProgressCallback | None = None,
+    model_override: str | None = None,
+    backend_override: str | None = None,
+    concurrency: int | None = None,
 ) -> dict:
-    """Iterate predictions × metrics, persist one EvaluationResult per pair."""
+    """Iterate predictions × metrics, persist one EvaluationResult per pair.
+
+    `concurrency` (or `JUDGE_CONCURRENCY` env) bounds parallel judgments. >1
+    only helps with remote backends; local Ollama should stay at 1.
+    """
     store = assistant.store
     jr = store.get_judge_run(judge_run_id)
     if not jr:
@@ -175,15 +195,23 @@ async def run_llm_judge(
         return {"judge_run_id": judge_run_id, "status": "completed", "total": 0}
 
     store.update_judge_run_status(judge_run_id, "running")
-    judge_agent = _create_judge_agent(assistant)
+    judge_agent = _create_judge_agent(
+        assistant, model_override=model_override, backend_override=backend_override
+    )
 
-    done = 0
-    ok = 0
-    failed = 0
-    for pred in predictions:
-        # enrich prediction with spans
-        full = store.get_prediction(pred["prediction_id"]) or pred
-        for metric in metrics:
+    if concurrency is None:
+        concurrency = int(os.getenv("JUDGE_CONCURRENCY", "1") or "1")
+    concurrency = max(1, concurrency)
+    sem = asyncio.Semaphore(concurrency)
+    progress_lock = asyncio.Lock()
+    counters = {"done": 0, "ok": 0, "failed": 0}
+
+    # Pre-load full predictions (with spans) so the inner coroutine doesn't hit
+    # the store under the semaphore.
+    full_preds = [store.get_prediction(p["prediction_id"]) or p for p in predictions]
+
+    async def _judge_one(full: dict, metric: dict) -> None:
+        async with sem:
             try:
                 score, reason = await judge_prediction(judge_agent, full, metric)
                 store.upsert_evaluation_result(
@@ -197,27 +225,31 @@ async def run_llm_judge(
                     comment=None,
                     judge_reasoning=reason,
                 )
-                ok += 1
-            except Exception as e:
+                bucket = "ok"
+            except Exception:
                 logger.exception(
                     "Judge failed prediction=%s metric=%s",
                     full.get("prediction_id"),
                     metric.get("metric_id"),
                 )
-                failed += 1
-                _ = e
-            done += 1
+                bucket = "failed"
+        async with progress_lock:
+            counters[bucket] += 1
+            counters["done"] += 1
             if on_progress:
-                maybe: Any = on_progress(done, total, metric["name"])
+                maybe: Any = on_progress(counters["done"], total, metric["name"])
                 if hasattr(maybe, "__await__"):
                     await maybe
 
-    final_status = "completed" if failed == 0 else "failed"
+    tasks = [_judge_one(full, metric) for full in full_preds for metric in metrics]
+    await asyncio.gather(*tasks)
+
+    final_status = "completed" if counters["failed"] == 0 else "failed"
     store.update_judge_run_status(judge_run_id, final_status, completed=True)
     return {
         "judge_run_id": judge_run_id,
         "status": final_status,
         "total": total,
-        "success": ok,
-        "failed": failed,
+        "success": counters["ok"],
+        "failed": counters["failed"],
     }
