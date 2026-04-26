@@ -58,6 +58,11 @@ class PromptsConfigFile(BaseModel):
     reviewer: str
     validator: str
     ingestion: str
+    judge: str = (
+        "You are an evaluation judge. Score the agent's answer against the given metric. "
+        'Return JSON {"score": <number>, "reason": <short string>}. '
+        "Use only the provided evidence; prefer conservative scores when ambiguous."
+    )
 
 
 class PersonalInfo(BaseModel):

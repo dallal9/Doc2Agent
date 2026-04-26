@@ -16,6 +16,11 @@
       "model": "openai/gpt-4o-mini",
       "temperature": 0.1,
       "backend": "openrouter"
+    },
+    "judge": {
+      "model": "openai/gpt-4o-mini",
+      "temperature": 0.0,
+      "backend": "openrouter"
     }
   }
 }

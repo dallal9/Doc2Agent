@@ -644,7 +644,7 @@ def _build_homepage():
         gr.Button("Datasets", link="./datasets", size="lg", scale=1)
         gr.Button("Evaluation", link="./evaluation", size="lg", scale=1)
         gr.Button("Dashboard", link="./dashboard", size="lg", scale=1)
-        gr.Button("Config", link="./config", size="lg", scale=1)
+        gr.Button("Config", link="./_config", size="lg", scale=1)
     gr.Markdown(
         '<div style="text-align:center; margin-top:0.5em; font-size:0.9em; opacity:0.8">'
         "<strong>Chat</strong> — Q&amp;A with your PDFs. "

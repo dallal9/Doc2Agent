@@ -8,6 +8,10 @@ from __future__ import annotations
 
 import html
 import json
+import os
+import re
+import tempfile
+from datetime import datetime
 
 import gradio as gr
 
@@ -21,6 +25,57 @@ METRIC_TYPES = ["bool", "int", "float"]
 AGGREGATIONS = ["avg", "sum", "min", "max"]
 
 logger = setup_logging("evaluation_tab")
+
+
+# ---- run naming helpers ---------------------------------------------------
+
+
+def _slugify(s: str) -> str:
+    """Lowercase, collapse non-alphanum to '-', trim leading/trailing '-'."""
+    s = (s or "").strip().lower()
+    s = re.sub(r"[^a-z0-9]+", "-", s)
+    return s.strip("-")
+
+
+def _auto_run_name_from_dataset(
+    dataset_id: str | None,
+    keyword: str,
+    assistant: ChatAssistant | None,
+    *,
+    kind: str = "run",
+) -> str:
+    """Build `{YYYYMMDD_HHMM}_{dataset-slug}_{kind}[_{keyword-slug}]`.
+
+    `kind` is "run" for execution runs, "judge" for judge runs. Returns ""
+    if dataset is unresolved so the textbox stays empty rather than showing
+    a malformed prefix.
+    """
+    if not dataset_id or assistant is None:
+        return ""
+    ds = assistant.store.get_dataset(dataset_id)
+    if not ds:
+        return ""
+    ds_slug = _slugify(ds.get("name") or "")
+    if not ds_slug:
+        return ""
+    stamp = datetime.now().strftime("%Y%m%d_%H%M")
+    parts = [stamp, ds_slug, kind]
+    kw_slug = _slugify(keyword or "")
+    if kw_slug:
+        parts.append(kw_slug)
+    return "_".join(parts)
+
+
+def _auto_run_name_from_eval_run(
+    eval_run_id: str | None, keyword: str, assistant: ChatAssistant | None
+) -> str:
+    """Judge-run variant: resolves dataset via the evaluation run."""
+    if not eval_run_id or assistant is None:
+        return ""
+    run = assistant.store.get_evaluation_run(eval_run_id)
+    if not run:
+        return ""
+    return _auto_run_name_from_dataset(run.get("dataset_id"), keyword, assistant, kind="judge")
 
 
 # ---- choice builders ------------------------------------------------------
@@ -274,7 +329,14 @@ def build_execution_run_tab(assistant_state: gr.State):
         with gr.Column(scale=1, min_width=300):
             gr.Markdown("### New run")
             dataset_dropdown = gr.Dropdown(label="Dataset", choices=[], interactive=True)
-            run_name = gr.Textbox(label="Run name", placeholder="e.g. baseline-2026-04-24")
+            run_keyword = gr.Textbox(
+                label="Keyword (optional)",
+                placeholder="Short tag, e.g. baseline / smoke / new-prompt",
+            )
+            run_name = gr.Textbox(
+                label="Run name",
+                placeholder="Auto-filled from datetime + dataset + keyword — edit to override.",
+            )
             run_label = gr.Textbox(
                 label="Label (optional)",
                 placeholder="Short tag — used as the default judge run name.",
@@ -355,6 +417,16 @@ def build_execution_run_tab(assistant_state: gr.State):
         fn=on_run_change,
         inputs=[run_dropdown, assistant_state],
         outputs=[results_tbl, summary_md],
+    )
+    dataset_dropdown.change(
+        fn=lambda dsid, kw, a: gr.update(value=_auto_run_name_from_dataset(dsid, kw, a)),
+        inputs=[dataset_dropdown, run_keyword, assistant_state],
+        outputs=[run_name],
+    )
+    run_keyword.change(
+        fn=lambda dsid, kw, a: gr.update(value=_auto_run_name_from_dataset(dsid, kw, a)),
+        inputs=[dataset_dropdown, run_keyword, assistant_state],
+        outputs=[run_name],
     )
     delete_run_btn.click(
         fn=on_delete_run,
@@ -727,17 +799,6 @@ def _eval_run_choices(assistant: ChatAssistant | None) -> list[tuple[str, str]]:
     return out
 
 
-def on_eval_run_pick_for_judge(eval_run_id, assistant):
-    """Prefill the judge run name with the evaluation run's label (or name)."""
-    if assistant is None or not eval_run_id:
-        return gr.update()
-    run = assistant.store.get_evaluation_run(eval_run_id)
-    if not run:
-        return gr.update()
-    suggested = (run.get("label") or run.get("name") or "").strip()
-    return gr.update(value=suggested)
-
-
 def _judge_run_choices(assistant: ChatAssistant | None) -> list[tuple[str, str]]:
     if assistant is None:
         return []
@@ -851,7 +912,20 @@ def on_judge_tab_load(assistant):
     )
 
 
-def on_create_judge_run(eval_run_id, metric_ids, judge_type, name, assistant):
+def _judge_default_cfg(assistant: ChatAssistant | None) -> dict:
+    """Return the default {model, backend} for the judge agent."""
+    if assistant is None:
+        return {"model": "", "backend": ""}
+    cfg = assistant.config
+    agent_cfg = (
+        cfg.agents.get("judge") or cfg.agents.get("reviewer") or next(iter(cfg.agents.values()))
+    )
+    return {"model": agent_cfg.model, "backend": agent_cfg.backend}
+
+
+def on_create_judge_run(
+    eval_run_id, metric_ids, judge_type, name, model, backend, concurrency, assistant
+):
     if assistant is None:
         assistant = ChatAssistant()
     if not eval_run_id:
@@ -859,16 +933,31 @@ def on_create_judge_run(eval_run_id, metric_ids, judge_type, name, assistant):
     if not metric_ids:
         return assistant, gr.update(), "Select at least one metric."
     name = (name or "").strip() or "Judge run"
+
+    defaults = _judge_default_cfg(assistant)
+    model = (model or "").strip() or defaults["model"]
+    backend = (backend or "").strip() or defaults["backend"]
+    try:
+        concurrency_int = max(1, int(concurrency or 1))
+    except (TypeError, ValueError):
+        concurrency_int = 1
+
+    snapshot = {
+        "model": model,
+        "backend": backend,
+        "concurrency": concurrency_int,
+    }
     jr_id = assistant.store.create_judge_run(
         evaluation_run_id=eval_run_id,
         name=name,
         judge_type=judge_type or "manual",
         metric_ids=list(metric_ids),
+        judge_config_snapshot=snapshot,
     )
     return (
         assistant,
         gr.update(choices=_judge_run_choices(assistant), value=jr_id),
-        f"Created judge run `{name}`.",
+        f"Created judge run `{name}` (model={model}, backend={backend}, concurrency={concurrency_int}).",
     )
 
 
@@ -1024,8 +1113,15 @@ async def on_run_llm_judge(judge_run_id, assistant):
         assistant = ChatAssistant()
     if not judge_run_id:
         return assistant, "Select a judge run.", gr.update(), gr.update()
+    snap = (assistant.store.get_judge_run(judge_run_id) or {}).get("judge_config_snapshot") or {}
     try:
-        summary = await run_llm_judge(assistant=assistant, judge_run_id=judge_run_id)
+        summary = await run_llm_judge(
+            assistant=assistant,
+            judge_run_id=judge_run_id,
+            model_override=snap.get("model") or None,
+            backend_override=snap.get("backend") or None,
+            concurrency=snap.get("concurrency"),
+        )
         msg = (
             f"LLM judge {summary['status']} — success: {summary.get('success', 0)} · "
             f"failed: {summary.get('failed', 0)} / {summary.get('total', 0)}"
@@ -1039,6 +1135,72 @@ async def on_run_llm_judge(judge_run_id, assistant):
         _aggregates_html(assistant, judge_run_id),
         gr.update(choices=_judge_run_choices(assistant), value=judge_run_id),
     )
+
+
+def on_export_judge_jsonl(judge_run_id, assistant):
+    """Export one JSONL line per prediction with its per-metric judge results."""
+    if assistant is None or not judge_run_id:
+        return None, "Select a judge run first."
+    jr = assistant.store.get_judge_run(judge_run_id)
+    if not jr:
+        return None, "Judge run not found."
+
+    eval_run_id = jr["evaluation_run_id"]
+    preds = assistant.store.list_predictions(eval_run_id)
+    results = assistant.store.list_evaluation_results(judge_run_id)
+
+    # Group results by prediction_id
+    by_pred: dict[str, list[dict]] = {}
+    for r in results:
+        by_pred.setdefault(r["prediction_id"], []).append(
+            {
+                "metric_id": r["metric_id"],
+                "metric_name": r.get("metric_name"),
+                "metric_type": r.get("metric_type"),
+                "score": r["score"],
+                "judge_type": r["judge_type"],
+                "comment": r.get("comment"),
+                "judge_reasoning": r.get("judge_reasoning"),
+            }
+        )
+
+    safe_jr_name = _slugify(jr.get("name") or "judge")
+    tmp = tempfile.NamedTemporaryFile(
+        mode="w",
+        suffix=".jsonl",
+        prefix=f"judge_{safe_jr_name}_",
+        delete=False,
+        encoding="utf-8",
+    )
+    written = 0
+    for p in preds:
+        full = assistant.store.get_prediction(p["prediction_id"]) or p
+        line = {
+            "prediction_id": full.get("prediction_id"),
+            "annotation_id": full.get("annotation_id"),
+            "doc_name": full.get("doc_name"),
+            "document_reference": full.get("document_reference"),
+            "question": full.get("question"),
+            "expected_answer": full.get("expected_answer"),
+            "agent_answer": full.get("agent_answer"),
+            "agent_thoughts": full.get("agent_thoughts"),
+            "context_used": full.get("context_used"),
+            "spans": full.get("spans") or [],
+            "status": full.get("status"),
+            "error_message": full.get("error_message"),
+            "metrics": by_pred.get(full.get("prediction_id"), []),
+        }
+        tmp.write(json.dumps(line, ensure_ascii=False) + "\n")
+        written += 1
+    tmp.close()
+    logger.info(
+        "exported judge_run=%s file=%s predictions=%d results=%d",
+        judge_run_id,
+        tmp.name,
+        written,
+        len(results),
+    )
+    return tmp.name, f"Exported {written} prediction(s) to JSONL."
 
 
 def on_delete_judge_run(judge_run_id, assistant):
@@ -1077,9 +1239,36 @@ def build_judge_run_tab(assistant_state: gr.State):
                 metrics_multi = gr.Dropdown(
                     label="Metrics", choices=[], multiselect=True, interactive=True, scale=3
                 )
-                gr.Button("Manage metrics →", link="../config", size="sm", scale=1)
+                gr.Button("Manage metrics →", link="../_config", size="sm", scale=1)
             judge_type_rd = gr.Radio(label="Judge type", choices=["manual", "llm"], value="manual")
-            jr_name = gr.Textbox(label="Judge run name", placeholder="e.g. manual-2026-04-25")
+            jr_keyword = gr.Textbox(
+                label="Keyword (optional)",
+                placeholder="Short tag, e.g. manual / llm-strict / qwen-judge",
+            )
+            jr_name = gr.Textbox(
+                label="Judge run name",
+                placeholder="Auto-filled from datetime + dataset + keyword — edit to override.",
+            )
+
+            with gr.Accordion("Judge config (LLM judge only)", open=False):
+                judge_model_tb = gr.Textbox(
+                    label="Model",
+                    placeholder="leave empty to use the `judge` agent default",
+                )
+                judge_backend_dd = gr.Dropdown(
+                    label="Backend",
+                    choices=["", "local", "openrouter"],
+                    value="",
+                    allow_custom_value=True,
+                )
+                judge_concurrency_n = gr.Number(
+                    label="Concurrency",
+                    value=int(os.getenv("JUDGE_CONCURRENCY", "1") or "1"),
+                    precision=0,
+                    minimum=1,
+                    info="Parallel (prediction × metric) judgments. Keep at 1 for local Ollama.",
+                )
+
             create_jr_btn = gr.Button("Create judge run", variant="primary")
 
             gr.Markdown("### Existing judge runs")
@@ -1089,6 +1278,9 @@ def build_judge_run_tab(assistant_state: gr.State):
                 run_llm_btn = gr.Button("Run LLM judge", size="sm")
                 delete_jr_btn = gr.Button("Delete", variant="stop", size="sm")
             jr_status_md = gr.Markdown("")
+
+            export_jsonl_btn = gr.Button("Export judge logs (JSONL)", size="sm")
+            export_jsonl_file = gr.File(label="Download", interactive=False)
 
             gr.Markdown("### Aggregates")
             aggregates_html = gr.HTML(value="")
@@ -1129,10 +1321,8 @@ def build_judge_run_tab(assistant_state: gr.State):
                                 f"{'∞' if mx is None else mx})"
                             )
                     with gr.Row():
-                        gr.Markdown(
-                            f"**{row['name']}** _({row['type']})_{range_hint}",
-                            min_width=180,
-                        )
+                        with gr.Column(min_width=180, scale=0):
+                            gr.Markdown(f"**{row['name']}** _({row['type']})_{range_hint}")
                         s = gr.Textbox(
                             value=row["score"],
                             label="Score",
@@ -1166,12 +1356,26 @@ def build_judge_run_tab(assistant_state: gr.State):
 
     create_jr_btn.click(
         fn=on_create_judge_run,
-        inputs=[eval_run_dd, metrics_multi, judge_type_rd, jr_name, assistant_state],
+        inputs=[
+            eval_run_dd,
+            metrics_multi,
+            judge_type_rd,
+            jr_name,
+            judge_model_tb,
+            judge_backend_dd,
+            judge_concurrency_n,
+            assistant_state,
+        ],
         outputs=[assistant_state, judge_run_dd, jr_status_md],
     )
     eval_run_dd.change(
-        fn=on_eval_run_pick_for_judge,
-        inputs=[eval_run_dd, assistant_state],
+        fn=lambda erid, kw, a: gr.update(value=_auto_run_name_from_eval_run(erid, kw, a)),
+        inputs=[eval_run_dd, jr_keyword, assistant_state],
+        outputs=[jr_name],
+    )
+    jr_keyword.change(
+        fn=lambda erid, kw, a: gr.update(value=_auto_run_name_from_eval_run(erid, kw, a)),
+        inputs=[eval_run_dd, jr_keyword, assistant_state],
         outputs=[jr_name],
     )
     refresh_btn.click(
@@ -1203,6 +1407,11 @@ def build_judge_run_tab(assistant_state: gr.State):
         fn=on_delete_judge_run,
         inputs=[judge_run_dd, assistant_state],
         outputs=[assistant_state, judge_run_dd, jr_status_md, pred_html, aggregates_html],
+    )
+    export_jsonl_btn.click(
+        fn=on_export_judge_jsonl,
+        inputs=[judge_run_dd, assistant_state],
+        outputs=[export_jsonl_file, jr_status_md],
     )
 
     return eval_run_dd, metrics_multi, judge_run_dd, aggregates_html

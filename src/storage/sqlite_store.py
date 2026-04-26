@@ -6,6 +6,7 @@ import uuid
 from datetime import datetime
 from typing import Iterator
 
+from src.logging import setup_logging
 from src.schemas import (
     Annotation,
     AnnotationSet,
@@ -206,6 +207,7 @@ CREATE TABLE IF NOT EXISTS judge_runs (
     judge_type TEXT NOT NULL CHECK(judge_type IN ('manual','llm')),
     metric_ids_json TEXT NOT NULL DEFAULT '[]',
     status TEXT NOT NULL DEFAULT 'pending',
+    judge_config_snapshot TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     completed_at TIMESTAMP,
     FOREIGN KEY (evaluation_run_id) REFERENCES evaluation_runs(run_id) ON DELETE CASCADE
@@ -308,6 +310,13 @@ class SQLiteStore:
                 "ALTER TABLE evaluation_predictions ADD COLUMN execution_time_ms INTEGER"
             )
 
+        cur = self.conn.execute("PRAGMA table_info(judge_runs)")
+        jr_cols = {row[1] for row in cur.fetchall()}
+        if jr_cols and "judge_config_snapshot" not in jr_cols:
+            self.conn.execute("ALTER TABLE judge_runs ADD COLUMN judge_config_snapshot TEXT")
+
+        self._heal_pages_fts()
+
         # Create query_cache table if it doesn't exist
         cur = self.conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='query_cache'"
@@ -378,6 +387,42 @@ class SQLiteStore:
                 "CREATE INDEX IF NOT EXISTS idx_chat_messages_session_seq ON chat_messages(session_id, seq)"
             )
 
+    def _heal_pages_fts(self) -> None:
+        """Repair drift in the pages_fts external-content index.
+
+        Older DBs (built before the AFTER INSERT/DELETE triggers existed, or
+        through code paths that bypassed them) can leave pages_fts referencing
+        rowids that no longer exist in `pages`. That surfaces as
+        `sqlite3.DatabaseError: fts5: missing row N from content table 'pages'`
+        when the agent calls search_pages_fts.
+
+        Note: FTS5's 'integrity-check' command verifies the FTS index's own
+        internal structure but does NOT check consistency with the external
+        content table. So we always run 'rebuild' (cheap for our sizes), which
+        re-derives the index from `pages`. If even that fails (e.g. the
+        virtual table is corrupt), drop and recreate it.
+        """
+        try:
+            self.conn.execute("INSERT INTO pages_fts(pages_fts) VALUES('rebuild')")
+            self.conn.commit()
+        except sqlite3.DatabaseError:
+            setup_logging("storage").exception(
+                "pages_fts rebuild failed; dropping and recreating from pages"
+            )
+            self.conn.execute("DROP TABLE IF EXISTS pages_fts")
+            self.conn.execute(
+                """CREATE VIRTUAL TABLE pages_fts USING fts5(
+                    doc_id, page_num, text,
+                    content='pages', content_rowid='rowid'
+                )"""
+            )
+            self.conn.execute(
+                """INSERT INTO pages_fts(rowid, doc_id, page_num, text)
+                   SELECT rowid, doc_id, page_num, text FROM pages"""
+            )
+            self.conn.commit()
+            setup_logging("storage").info("pages_fts recreated from pages")
+
     def insert_document(self, doc: DocumentSchema):
         cur = self.conn.cursor()
         m = doc.metadata
@@ -398,9 +443,15 @@ class SQLiteStore:
                 m.file_hash,
             ),
         )
+        # Explicit delete+insert (rather than INSERT OR REPLACE) so the
+        # AFTER DELETE / AFTER INSERT triggers on `pages` fire cleanly and
+        # keep `pages_fts` in sync. INSERT OR REPLACE has caused FTS5
+        # external-content drift in this DB ("missing row N from content
+        # table 'pages'") on re-ingest.
+        cur.execute("DELETE FROM pages WHERE doc_id = ?", (m.doc_id,))
         for p in doc.pages:
             cur.execute(
-                """INSERT OR REPLACE INTO pages
+                """INSERT INTO pages
                    (doc_id, page_num, char_count, word_count, has_tables, has_images,
                     contains_names, contains_dates, contains_locations, contains_signatures,
                     contains_personal_info, headings_json, languages_json, keywords_json, text)
@@ -496,15 +547,31 @@ class SQLiteStore:
         return list(self.query_pages(doc_id, limit=-1))
 
     def search_text(self, doc_id: str, query: str, limit: int = 10) -> list[PageSchema]:
-        """Full-text search using FTS5."""
+        """Full-text search using FTS5.
+
+        On FTS5 corruption (e.g. "missing row N from content table 'pages'"),
+        run the heal routine and retry once. This makes search resilient to
+        any drift introduced at runtime even after startup heal.
+        """
         sql = """SELECT p.* FROM pages p
                  JOIN pages_fts f ON p.rowid = f.rowid
                  WHERE f.doc_id = ? AND pages_fts MATCH ?
                  ORDER BY rank LIMIT ?"""
-        pages = []
-        for row in self.conn.execute(sql, (doc_id, query, limit)):
-            pages.append(self._row_to_page(row))
-        return pages
+        try:
+            return [
+                self._row_to_page(row) for row in self.conn.execute(sql, (doc_id, query, limit))
+            ]
+        except sqlite3.DatabaseError as e:
+            msg = str(e).lower()
+            if "fts5" not in msg and "missing row" not in msg:
+                raise
+            setup_logging("storage").warning(
+                "search_text hit FTS5 drift (%s); healing and retrying", e
+            )
+            self._heal_pages_fts()
+            return [
+                self._row_to_page(row) for row in self.conn.execute(sql, (doc_id, query, limit))
+            ]
 
     def get_document_by_path(self, file_path: str) -> DocumentMetadata | None:
         """Look up document by file path for cache checking."""
@@ -1179,18 +1246,21 @@ class SQLiteStore:
         name: str,
         judge_type: str,
         metric_ids: list[str],
+        judge_config_snapshot: dict | None = None,
     ) -> str:
         judge_run_id = str(uuid.uuid4())
         self.conn.execute(
             """INSERT INTO judge_runs
-               (judge_run_id, evaluation_run_id, name, judge_type, metric_ids_json, status)
-               VALUES (?, ?, ?, ?, ?, 'pending')""",
+               (judge_run_id, evaluation_run_id, name, judge_type, metric_ids_json,
+                status, judge_config_snapshot)
+               VALUES (?, ?, ?, ?, ?, 'pending', ?)""",
             (
                 judge_run_id,
                 evaluation_run_id,
                 name,
                 judge_type,
                 json.dumps(metric_ids or []),
+                json.dumps(judge_config_snapshot) if judge_config_snapshot else None,
             ),
         )
         self.conn.commit()
@@ -1222,6 +1292,12 @@ class SQLiteStore:
             d["metric_ids"] = json.loads(d.pop("metric_ids_json") or "[]")
         except json.JSONDecodeError:
             d["metric_ids"] = []
+        snap_raw = d.get("judge_config_snapshot")
+        if snap_raw:
+            try:
+                d["judge_config_snapshot"] = json.loads(snap_raw)
+            except json.JSONDecodeError:
+                d["judge_config_snapshot"] = None
         return d
 
     def list_judge_runs(self, evaluation_run_id: str | None = None) -> list[dict]:
