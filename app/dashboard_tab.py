@@ -2,94 +2,19 @@
 
 from __future__ import annotations
 
-import html
-import itertools
-
 import gradio as gr
 
-_TABLE_ID_COUNTER = itertools.count(1)
-
-
-def _next_table_id() -> str:
-    return f"d2a-tbl-{next(_TABLE_ID_COUNTER)}"
-
-
+from app.ui_components import fmt_duration_ms, fmt_score, render_kpis, render_table
 from src.chat import ChatAssistant
 from src.logging import setup_logging
 
 logger = setup_logging("dashboard_tab")
 
 
-# ---- helpers --------------------------------------------------------------
-
-
-def _kpi_block(items: list[tuple[str, object]]) -> str:
-    cells = []
-    for label, value in items:
-        cells.append(
-            "<div style='flex:1;min-width:120px;padding:12px 16px;"
-            "border:1px solid #2a2a2a;border-radius:8px;margin:4px'>"
-            f"<div style='font-size:0.8em;opacity:0.75'>{html.escape(label)}</div>"
-            f"<div style='font-size:1.6em;font-weight:600'>{html.escape(str(value))}</div>"
-            "</div>"
-        )
-    return "<div style='display:flex;flex-wrap:wrap'>" + "".join(cells) + "</div>"
-
-
-def _table(
-    headers: list[str],
-    rows: list[list[object]],
-    empty_msg: str = "—",
-    *,
-    max_height: int = 360,
-    searchable: bool = True,
-) -> str:
-    if not rows:
-        return f"<p><em>{html.escape(empty_msg)}</em></p>"
-    tid = _next_table_id()
-    th = "".join(
-        "<th style='text-align:left;padding:6px;border-bottom:1px solid #888;"
-        "position:sticky;top:0;background:var(--background-fill-primary, #1a1a1a);"
-        f"z-index:1'>{html.escape(h)}</th>"
-        for h in headers
-    )
-    body = []
-    for r in rows:
-        tds = "".join(
-            "<td style='padding:6px;border-bottom:1px solid #2a2a2a;vertical-align:top'>"
-            f"{html.escape('' if c is None else str(c))}</td>"
-            for c in r
-        )
-        body.append(f"<tr>{tds}</tr>")
-    search_box = ""
-    if searchable:
-        search_box = (
-            "<input type='search' placeholder='Filter rows...' "
-            f"data-target='{tid}' "
-            'oninput="(function(e){var id=e.target.dataset.target;var q=e.target.value.toLowerCase();'
-            "var t=document.getElementById(id);if(!t)return;"
-            "t.querySelectorAll('tbody tr').forEach(function(r){"
-            "r.style.display=r.innerText.toLowerCase().indexOf(q)>=0?'':'none';});"
-            '})(event)" '
-            "style='width:100%;padding:4px 8px;margin-bottom:6px;"
-            "border:1px solid #555;border-radius:4px;background:transparent;color:inherit'/>"
-        )
-    return (
-        f"<div>{search_box}"
-        f"<div style='max-height:{max_height}px;overflow:auto;"
-        "border:1px solid #2a2a2a;border-radius:4px'>"
-        f"<table id='{tid}' style='width:100%;border-collapse:collapse;font-size:0.9em'>"
-        f"<thead><tr>{th}</tr></thead><tbody>{''.join(body)}</tbody></table>"
-        "</div></div>"
-    )
-
-
-def _fmt_score(value: object) -> str:
-    if value is None:
-        return "—"
-    if isinstance(value, float):
-        return f"{value:.3f}"
-    return str(value)
+# Backwards-compatible aliases (kept terse — module-internal use only)
+_table = render_table
+_kpi_block = render_kpis
+_fmt_score = fmt_score
 
 
 # ---- Data tab -------------------------------------------------------------
@@ -208,6 +133,7 @@ def _evaluation_overview(
 
     total_predictions = 0
     failed_runs = 0
+    grand_total_ms = 0
     runs_rows: list[list[object]] = []
     failed_predictions: list[list[object]] = []
     missing_doc_predictions: list[list[object]] = []
@@ -221,6 +147,8 @@ def _evaluation_overview(
         skipped = sum(1 for p in preds if p["status"] == "skipped")
         if r["status"] == "failed":
             failed_runs += 1
+        timing = store.get_run_timing(run_id)
+        grand_total_ms += timing["total_ms"]
         runs_rows.append(
             [
                 r["name"],
@@ -230,6 +158,8 @@ def _evaluation_overview(
                 ok,
                 failed,
                 skipped,
+                fmt_duration_ms(timing["total_ms"]) if timing["count"] else "—",
+                fmt_duration_ms(timing["avg_ms"]),
                 r.get("created_at") or "—",
             ]
         )
@@ -350,10 +280,22 @@ def _evaluation_overview(
             ("Judgments", total_results),
             ("Failed runs", failed_runs),
             ("Metrics", len(metrics)),
+            ("Total agent time", fmt_duration_ms(grand_total_ms) if grand_total_ms else "—"),
         ]
     )
     runs_table = _table(
-        ["Name", "Dataset", "Status", "Predictions", "OK", "Failed", "Skipped", "Created"],
+        [
+            "Name",
+            "Dataset",
+            "Status",
+            "Predictions",
+            "OK",
+            "Failed",
+            "Skipped",
+            "Total time",
+            "Avg time",
+            "Created",
+        ],
         runs_rows,
         empty_msg="No evaluation runs yet.",
     )

@@ -10,6 +10,7 @@ from pathlib import Path
 
 import gradio as gr
 
+from app.ui_components import render_table
 from src.chat import ChatAssistant
 from src.logging import setup_logging
 from src.schemas import Span
@@ -55,27 +56,23 @@ def _annotations_html(assistant: ChatAssistant | None, set_id: str | None) -> st
     anns = assistant.store.list_annotations(set_id)
     if not anns:
         return "<em>No annotations yet.</em>"
-    from html import escape
-
-    parts = ['<div style="font:13px/1.4 sans-serif;">']
+    rows: list[list[object]] = []
     for a in anns:
         spans = "; ".join(
             (
                 f"[p.{s.page_num}]"
                 if s.kind == "page"
-                else f"p.{s.page_num}: {escape((s.quoted_text or '')[:80])}"
+                else f"p.{s.page_num}: {(s.quoted_text or '')[:80]}"
             )
             for s in a.spans
         )
-        parts.append(
-            f'<div style="padding:6px;border-bottom:1px solid var(--border-color-primary,#ddd);">'
-            f"<b>Q:</b> {escape(a.question)}<br>"
-            f"<b>A:</b> {escape(a.answer)}<br>"
-            f'<span style="opacity:.7;">spans: {spans}</span>'
-            f"</div>"
-        )
-    parts.append("</div>")
-    return "".join(parts)
+        rows.append([a.question, a.answer, spans or "—"])
+    return render_table(
+        ["Question", "Answer", "Spans"],
+        rows,
+        empty_msg="No annotations yet.",
+        max_height=420,
+    )
 
 
 def _annotation_id_choices(

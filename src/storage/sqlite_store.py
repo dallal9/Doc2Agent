@@ -180,6 +180,7 @@ CREATE TABLE IF NOT EXISTS evaluation_predictions (
     context_used TEXT,
     status TEXT NOT NULL DEFAULT 'success',
     error_message TEXT,
+    execution_time_ms INTEGER,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (run_id) REFERENCES evaluation_runs(run_id) ON DELETE CASCADE
 );
@@ -299,6 +300,13 @@ class SQLiteStore:
         eval_cols = {row[1] for row in cur.fetchall()}
         if eval_cols and "label" not in eval_cols:
             self.conn.execute("ALTER TABLE evaluation_runs ADD COLUMN label TEXT")
+
+        cur = self.conn.execute("PRAGMA table_info(evaluation_predictions)")
+        pred_cols = {row[1] for row in cur.fetchall()}
+        if pred_cols and "execution_time_ms" not in pred_cols:
+            self.conn.execute(
+                "ALTER TABLE evaluation_predictions ADD COLUMN execution_time_ms INTEGER"
+            )
 
         # Create query_cache table if it doesn't exist
         cur = self.conn.execute(
@@ -987,13 +995,15 @@ class SQLiteStore:
         context_used: str | None,
         status: str,
         error_message: str | None,
+        execution_time_ms: int | None = None,
     ) -> str:
         prediction_id = str(uuid.uuid4())
         self.conn.execute(
             """INSERT INTO evaluation_predictions
                (prediction_id, run_id, dataset_id, annotation_id, agent_answer,
-                agent_thoughts, document_reference, context_used, status, error_message)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                agent_thoughts, document_reference, context_used, status, error_message,
+                execution_time_ms)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 prediction_id,
                 run_id,
@@ -1005,6 +1015,7 @@ class SQLiteStore:
                 context_used,
                 status,
                 error_message,
+                execution_time_ms,
             ),
         )
         self.conn.commit()
@@ -1023,6 +1034,28 @@ class SQLiteStore:
             (run_id,),
         ).fetchall()
         return [dict(r) for r in rows]
+
+    def get_run_timing(self, run_id: str) -> dict:
+        """Return execution-time aggregates for a run.
+
+        Counts only successful predictions (failures and skips are excluded
+        from the average so a fast skip doesn't deflate it). `total_ms` and
+        `count` are over predictions where `execution_time_ms IS NOT NULL`.
+        """
+        row = self.conn.execute(
+            """SELECT
+                   COALESCE(SUM(execution_time_ms), 0) AS total_ms,
+                   COUNT(execution_time_ms) AS count
+               FROM evaluation_predictions
+               WHERE run_id = ?
+                 AND status = 'success'
+                 AND execution_time_ms IS NOT NULL""",
+            (run_id,),
+        ).fetchone()
+        total = int(row["total_ms"] or 0)
+        count = int(row["count"] or 0)
+        avg = (total / count) if count else None
+        return {"total_ms": total, "avg_ms": avg, "count": count}
 
     def get_prediction(self, prediction_id: str) -> dict | None:
         row = self.conn.execute(
@@ -1311,6 +1344,8 @@ class SQLiteStore:
             (jr["evaluation_run_id"],),
         ).fetchone()["c"]
 
+        timing = self.get_run_timing(jr["evaluation_run_id"])
+
         out: list[dict] = []
         for metric_id in jr["metric_ids"]:
             metric = self.get_metric(metric_id)
@@ -1347,6 +1382,8 @@ class SQLiteStore:
                     "judged_count": judged,
                     "missing_count": missing,
                     "total_predictions": total_preds,
+                    "total_execution_time_ms": timing["total_ms"],
+                    "avg_execution_time_ms": timing["avg_ms"],
                 }
             )
         return out
