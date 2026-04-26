@@ -1,5 +1,6 @@
 import json
 import os
+import re
 from pathlib import Path
 from typing import Any, Literal, cast
 
@@ -10,6 +11,27 @@ from src.logging import setup_logging
 CONFIG_DIR = Path(__file__).parent
 AGENTS_CONFIG_PATH_ENV = "AGENTS_CONFIG_PATH"
 PROMPTS_CONFIG_PATH_ENV = "PROMPTS_CONFIG_PATH"
+
+_ENV_PLACEHOLDER_RE = re.compile(r"\$\{([A-Z0-9_]+)\}")
+
+
+def _resolve_env_placeholders(raw: str, source: str) -> str:
+    """Replace ${VAR} placeholders with os.environ values.
+
+    Raises ValueError if a referenced var is unset, naming `source` for context.
+    """
+
+    def replace(match: re.Match[str]) -> str:
+        name = match.group(1)
+        value = os.environ.get(name)
+        if value is None or value == "":
+            raise ValueError(
+                f"{source} references unset env var: ${{{name}}}. "
+                f"Set {name} in your .env or via Config → System."
+            )
+        return value
+
+    return _ENV_PLACEHOLDER_RE.sub(replace, raw)
 
 
 class BackendConfig(BaseModel):
@@ -67,7 +89,9 @@ def load_agents_config(path: Path | None = None) -> AgentsConfigFile:
     if path is None:
         env_path = os.getenv(AGENTS_CONFIG_PATH_ENV)
         path = Path(env_path) if env_path else (CONFIG_DIR / "agents.json")
-    cfg = AgentsConfigFile.model_validate_json(path.read_text(encoding="utf-8"))
+    raw = path.read_text(encoding="utf-8")
+    raw = _resolve_env_placeholders(raw, source=f"agents config ({path})")
+    cfg = AgentsConfigFile.model_validate_json(raw)
     setup_logging("config").info(
         "Agents config path=%s default_backend=%s backends=%s agents=%s",
         str(path),

@@ -28,7 +28,7 @@ Doc2Agent transforms static PDF documents into interactive knowledge bases. Usin
   - **Chat** — Q&A with the agents (with a one-click "clean empty sessions" button)
   - **Datasets** — two tabs: *Live Chat Datasets* (turn chat sessions into eval sets) and *Annotate Documents* (PDF.js viewer + span staging + push annotation sets into a dataset)
   - **Evaluation** — two tabs: *Execution Run* (run a dataset against the chat agent, one-turn per annotation, store predictions) and *Judge Run* (manual or LLM-as-judge scoring per metric, with aggregation)
-  - **Config** — *Metrics* tab: CRUD for reusable metrics (`bool | int | float`, aggregation, optional judge prompt, optional min/max range)
+  - **Config** — *Metrics* tab (CRUD for reusable metrics: `bool | int | float`, aggregation, optional judge prompt, optional min/max range) and *System* tab (view/edit every supported `.env` variable, split into live-applicable settings vs ones that need a restart)
   - **Dashboard** — two tabs: *Data* (documents, annotation sets, datasets) and *Evaluations* (runs, judge runs, per-judge-run pivot of metric scores, global metric rollup, failure inspection: failed predictions, low-score judgments, missing document references)
 
 ---
@@ -241,6 +241,22 @@ For detailed architecture documentation, see [docs/architecture.md](docs/archite
 | `LOG_FILE` | Path to log file |
 | `LOG_TO_FILE` | Enable file logging (true/false, default: true) |
 | `LOG_TO_STDOUT` | Stream logs to terminal in addition to file (true/false, default: false) |
+
+### Default models
+
+Set `DEFAULT_MODEL` / `DEFAULT_LIGHT` / `DEFAULT_MID` / `DEFAULT_HIGH` in `.env` and reference them from `src/agents_config/agents.json` using `${VAR}` placeholders, e.g.:
+
+```json
+"main":      { "model": "${DEFAULT_MID}",   "backend": "openrouter", "temperature": 0.2 },
+"reviewer":  { "model": "${DEFAULT_HIGH}",  "backend": "openrouter", "temperature": 0.1 },
+"ingestion": { "model": "${DEFAULT_LIGHT}", "backend": "openrouter", "temperature": 0.0 }
+```
+
+Placeholders are resolved at config load. If a referenced var is unset, startup fails with a clear error. Literal model strings still work.
+
+### Editing config from the UI
+
+Open **Config → System** to view and edit every supported `.env` variable from the browser. Settings are split into *Live* (applied on save: log level, eval defaults, model overrides, cache settings, …) and *Restart-required* (cached at startup: `USE_ENRICHMENT`, `SHOW_REASONING`, `ASSISTANT_NAME`, log file paths). The *Save & Restart* button writes `.env` and relaunches the process.
 
 ### Config files
 
