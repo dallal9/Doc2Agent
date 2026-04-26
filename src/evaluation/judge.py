@@ -28,19 +28,25 @@ class JudgeOutput(BaseModel):
     reason: str = Field(default="", description="Short explanation for the score.")
 
 
-def _create_judge_agent(
+class MetricResult(BaseModel):
+    metric_name: str = Field(description="Name of the metric being scored, verbatim.")
+    score: float = Field(description="Numeric score; for bool metrics use 0 or 1.")
+    reason: str = Field(default="", description="Short explanation for the score.")
+
+
+class BatchJudgeOutput(BaseModel):
+    results: list[MetricResult] = Field(
+        description="One entry per metric. Use the metric names listed in the prompt verbatim.",
+    )
+
+
+def _resolve_judge_agent_config(
     assistant: ChatAssistant,
     *,
-    model_override: str | None = None,
-    backend_override: str | None = None,
-) -> Agent[None, JudgeOutput]:
-    """Build a one-shot judge agent.
-
-    Prefers the dedicated `judge` agent config; falls back to `reviewer` for
-    backward compatibility with older `agents.json` files. `model_override` and
-    `backend_override` let the Judge Run UI override per-run without mutating
-    the config file.
-    """
+    model_override: str | None,
+    backend_override: str | None,
+) -> tuple[str, str]:
+    """Resolve (model_string, backend_name) for the judge agent."""
     cfg = assistant.config
     agent_cfg = (
         cfg.agents.get("judge")
@@ -51,12 +57,41 @@ def _create_judge_agent(
     if backend_name not in cfg.backends:
         raise ValueError(f"Unknown backend for judge: {backend_name}")
     backend_cfg = cfg.backends[backend_name]
-    model_string = get_model_string(backend_cfg, model_override or agent_cfg.model)
-    system_prompt = assistant.prompts.judge
+    return get_model_string(backend_cfg, model_override or agent_cfg.model), backend_name
+
+
+def _create_judge_agent(
+    assistant: ChatAssistant,
+    *,
+    model_override: str | None = None,
+    backend_override: str | None = None,
+) -> Agent[None, JudgeOutput]:
+    """Build a one-shot per-metric judge agent (legacy; kept for compatibility)."""
+    model_string, _ = _resolve_judge_agent_config(
+        assistant, model_override=model_override, backend_override=backend_override
+    )
     agent: Agent[None, JudgeOutput] = Agent(
         model_string,
-        system_prompt=system_prompt,
+        system_prompt=assistant.prompts.judge,
         output_type=JudgeOutput,
+    )
+    return agent
+
+
+def _create_batch_judge_agent(
+    assistant: ChatAssistant,
+    *,
+    model_override: str | None = None,
+    backend_override: str | None = None,
+) -> Agent[None, BatchJudgeOutput]:
+    """Build a judge agent that scores all selected metrics in one call."""
+    model_string, _ = _resolve_judge_agent_config(
+        assistant, model_override=model_override, backend_override=backend_override
+    )
+    agent: Agent[None, BatchJudgeOutput] = Agent(
+        model_string,
+        system_prompt=assistant.prompts.judge,
+        output_type=BatchJudgeOutput,
     )
     return agent
 
@@ -144,6 +179,94 @@ def _build_judge_prompt(prediction: dict, metric: dict) -> str:
     )
 
 
+def _scale_hint(metric: dict) -> str:
+    mtype = metric.get("type", "float")
+    meta = metric.get("metadata") or {}
+    if mtype == "bool":
+        return "0 (false) or 1 (true)"
+    if mtype == "int":
+        lo = meta.get("min", 0)
+        hi = meta.get("max", 5)
+        return f"integer in [{lo}, {hi}]"
+    lo = meta.get("min", 0.0)
+    hi = meta.get("max", 1.0)
+    return f"float in [{lo}, {hi}]"
+
+
+def _build_batch_judge_prompt(prediction: dict, metrics: list[dict]) -> str:
+    """Build the user message for a batch (multi-metric) judge call.
+
+    The system prompt (assistant.prompts.judge) is the global preamble. This
+    function supplies the metric rubric block followed by the prediction
+    context, and instructs the model to produce one entry per metric using
+    the listed metric names verbatim.
+    """
+    rubric_lines = ["Metrics to score (use these names VERBATIM in `metric_name`):"]
+    for m in metrics:
+        name = m.get("name") or m.get("metric_id")
+        desc = (m.get("description") or "").strip()
+        guidance = (m.get("judge_prompt") or "").strip()
+        rubric_lines.append(f"- {name} ({_scale_hint(m)}): {desc}")
+        if guidance:
+            for ln in guidance.splitlines():
+                rubric_lines.append(f"    {ln}")
+    rubric = "\n".join(rubric_lines)
+
+    question = prediction.get("question") or ""
+    expected = prediction.get("expected_answer") or ""
+    answer = prediction.get("agent_answer") or ""
+    thoughts = prediction.get("agent_thoughts") or ""
+    context = prediction.get("context_used") or ""
+    spans_block = _format_spans(prediction.get("spans"))
+    doc_ref = prediction.get("doc_name") or prediction.get("document_reference") or "—"
+
+    return (
+        f"{rubric}\n\n"
+        f"Return one MetricResult per metric above. Do not invent metrics.\n\n"
+        f"Document: {doc_ref}\n\n"
+        f"Question:\n{question}\n\n"
+        f"Expected answer:\n{expected}\n\n"
+        f"Agent answer:\n{answer}\n\n"
+        f"Agent think trace (may be empty):\n{thoughts or '(none)'}\n\n"
+        f"Agent context / retrieved text references (may be empty):\n"
+        f"{context or '(none)'}\n\n"
+        f"Annotation evidence spans:\n{spans_block}\n"
+    )
+
+
+async def judge_prediction_batch(
+    judge_agent: Agent[None, BatchJudgeOutput],
+    prediction: dict,
+    metrics: list[dict],
+) -> dict[str, tuple[float, str]]:
+    """Score one prediction against all selected metrics in a single call.
+
+    Returns a dict keyed by metric_id of (clipped_score, reason). Metrics the
+    LLM omitted are absent; metrics it hallucinated (unknown name) are
+    dropped with a warning.
+    """
+    prompt = _build_batch_judge_prompt(prediction, metrics)
+    result = await run_agent(judge_agent, prompt, label="judge")
+    out = result.output
+    if isinstance(out, BatchJudgeOutput):
+        items = out.results
+    elif isinstance(out, dict) and isinstance(out.get("results"), list):
+        items = [MetricResult.model_validate(r) for r in out["results"]]
+    else:
+        items = []
+
+    name_to_metric = {(m.get("name") or "").strip().lower(): m for m in metrics}
+    scored: dict[str, tuple[float, str]] = {}
+    for item in items:
+        key = (item.metric_name or "").strip().lower()
+        metric = name_to_metric.get(key)
+        if not metric:
+            logger.warning("Judge returned unknown metric_name=%r; dropping", item.metric_name)
+            continue
+        scored[metric["metric_id"]] = (_clip_score(item.score, metric), item.reason or "")
+    return scored
+
+
 async def judge_prediction(
     judge_agent: Agent[None, JudgeOutput],
     prediction: dict,
@@ -171,10 +294,11 @@ async def run_llm_judge(
     backend_override: str | None = None,
     concurrency: int | None = None,
 ) -> dict:
-    """Iterate predictions × metrics, persist one EvaluationResult per pair.
+    """Score every prediction against all selected metrics in ONE LLM call per
+    prediction (so total calls = #predictions, not #predictions × #metrics).
 
-    `concurrency` (or `JUDGE_CONCURRENCY` env) bounds parallel judgments. >1
-    only helps with remote backends; local Ollama should stay at 1.
+    `concurrency` (or `JUDGE_CONCURRENCY` env) bounds parallel predictions.
+    >1 only helps with remote backends; local Ollama should stay at 1.
     """
     store = assistant.store
     jr = store.get_judge_run(judge_run_id)
@@ -189,13 +313,13 @@ async def run_llm_judge(
 
     predictions = store.list_predictions(evaluation_run_id)
     predictions = [p for p in predictions if p.get("status") == "success"]
-    total = len(predictions) * len(metrics)
+    total = len(predictions) * len(metrics)  # results to write, used for progress
     if total == 0:
         store.update_judge_run_status(judge_run_id, "completed", completed=True)
         return {"judge_run_id": judge_run_id, "status": "completed", "total": 0}
 
     store.update_judge_run_status(judge_run_id, "running")
-    judge_agent = _create_judge_agent(
+    judge_agent = _create_batch_judge_agent(
         assistant, model_override=model_override, backend_override=backend_override
     )
 
@@ -206,43 +330,55 @@ async def run_llm_judge(
     progress_lock = asyncio.Lock()
     counters = {"done": 0, "ok": 0, "failed": 0}
 
-    # Pre-load full predictions (with spans) so the inner coroutine doesn't hit
-    # the store under the semaphore.
     full_preds = [store.get_prediction(p["prediction_id"]) or p for p in predictions]
 
-    async def _judge_one(full: dict, metric: dict) -> None:
+    async def _judge_prediction(full: dict) -> None:
         async with sem:
             try:
-                score, reason = await judge_prediction(judge_agent, full, metric)
-                store.upsert_evaluation_result(
-                    judge_run_id=judge_run_id,
-                    evaluation_run_id=evaluation_run_id,
-                    prediction_id=full["prediction_id"],
-                    annotation_id=full["annotation_id"],
-                    metric_id=metric["metric_id"],
-                    score=score,
-                    judge_type="llm",
-                    comment=None,
-                    judge_reasoning=reason,
-                )
-                bucket = "ok"
+                scored = await judge_prediction_batch(judge_agent, full, metrics)
+                ok_local = 0
+                failed_local = 0
+                for metric in metrics:
+                    pair = scored.get(metric["metric_id"])
+                    if pair is None:
+                        logger.warning(
+                            "Judge missing metric=%s for prediction=%s",
+                            metric.get("metric_id"),
+                            full.get("prediction_id"),
+                        )
+                        failed_local += 1
+                        continue
+                    score, reason = pair
+                    store.upsert_evaluation_result(
+                        judge_run_id=judge_run_id,
+                        evaluation_run_id=evaluation_run_id,
+                        prediction_id=full["prediction_id"],
+                        annotation_id=full["annotation_id"],
+                        metric_id=metric["metric_id"],
+                        score=score,
+                        judge_type="llm",
+                        comment=None,
+                        judge_reasoning=reason,
+                    )
+                    ok_local += 1
             except Exception:
                 logger.exception(
-                    "Judge failed prediction=%s metric=%s",
+                    "Batch judge failed prediction=%s",
                     full.get("prediction_id"),
-                    metric.get("metric_id"),
                 )
-                bucket = "failed"
+                ok_local = 0
+                failed_local = len(metrics)
         async with progress_lock:
-            counters[bucket] += 1
-            counters["done"] += 1
+            counters["ok"] += ok_local
+            counters["failed"] += failed_local
+            counters["done"] += ok_local + failed_local
             if on_progress:
-                maybe: Any = on_progress(counters["done"], total, metric["name"])
+                label = metrics[-1]["name"] if metrics else ""
+                maybe: Any = on_progress(counters["done"], total, label)
                 if hasattr(maybe, "__await__"):
                     await maybe
 
-    tasks = [_judge_one(full, metric) for full in full_preds for metric in metrics]
-    await asyncio.gather(*tasks)
+    await asyncio.gather(*(_judge_prediction(full) for full in full_preds))
 
     final_status = "completed" if counters["failed"] == 0 else "failed"
     store.update_judge_run_status(judge_run_id, final_status, completed=True)
