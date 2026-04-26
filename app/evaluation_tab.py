@@ -38,12 +38,17 @@ def _slugify(s: str) -> str:
 
 
 def _auto_run_name_from_dataset(
-    dataset_id: str | None, keyword: str, assistant: ChatAssistant | None
+    dataset_id: str | None,
+    keyword: str,
+    assistant: ChatAssistant | None,
+    *,
+    kind: str = "run",
 ) -> str:
-    """Build `{YYYYMMDD_HHMM}_{dataset-slug}[_{keyword-slug}]`.
+    """Build `{YYYYMMDD_HHMM}_{dataset-slug}_{kind}[_{keyword-slug}]`.
 
-    Returns "" if dataset is unresolved so the textbox stays empty rather
-    than showing a malformed prefix.
+    `kind` is "run" for execution runs, "judge" for judge runs. Returns ""
+    if dataset is unresolved so the textbox stays empty rather than showing
+    a malformed prefix.
     """
     if not dataset_id or assistant is None:
         return ""
@@ -54,7 +59,7 @@ def _auto_run_name_from_dataset(
     if not ds_slug:
         return ""
     stamp = datetime.now().strftime("%Y%m%d_%H%M")
-    parts = [stamp, ds_slug]
+    parts = [stamp, ds_slug, kind]
     kw_slug = _slugify(keyword or "")
     if kw_slug:
         parts.append(kw_slug)
@@ -64,13 +69,15 @@ def _auto_run_name_from_dataset(
 def _auto_run_name_from_eval_run(
     eval_run_id: str | None, keyword: str, assistant: ChatAssistant | None
 ) -> str:
-    """Same format as _auto_run_name_from_dataset but resolves dataset via eval run."""
+    """Judge-run variant: resolves dataset via the evaluation run."""
     if not eval_run_id or assistant is None:
         return ""
     run = assistant.store.get_evaluation_run(eval_run_id)
     if not run:
         return ""
-    return _auto_run_name_from_dataset(run.get("dataset_id"), keyword, assistant)
+    return _auto_run_name_from_dataset(
+        run.get("dataset_id"), keyword, assistant, kind="judge"
+    )
 
 
 # ---- choice builders ------------------------------------------------------
