@@ -11,6 +11,7 @@ import json
 
 import gradio as gr
 
+from app.ui_components import fmt_duration_ms, fmt_score, render_table
 from src.chat import ChatAssistant
 from src.evaluation import run_evaluation, run_llm_judge
 from src.evaluation.runner import normalize_config
@@ -48,42 +49,33 @@ def _run_choices(assistant: ChatAssistant | None) -> list[tuple[str, str]]:
 
 
 def _results_html(assistant: ChatAssistant | None, run_id: str | None) -> str:
-    """Render predictions as an HTML table. Avoids a gr.Dataframe recursion bug."""
+    """Render predictions as a scrollable, filterable table."""
     if assistant is None or not run_id:
         return ""
     preds = assistant.store.list_predictions(run_id)
     if not preds:
         return "<p><em>No predictions yet.</em></p>"
-    headers = ["Question", "Expected", "Agent answer", "Document", "Status", "Error"]
-    out = [
-        "<table style='width:100%;border-collapse:collapse;font-size:0.9em'>",
-        "<thead><tr>"
-        + "".join(
-            f"<th style='text-align:left;padding:6px;border-bottom:1px solid #888'>{h}</th>"
-            for h in headers
-        )
-        + "</tr></thead>",
-        "<tbody>",
-    ]
     status_colors = {"success": "#1a7f37", "failed": "#b42318", "skipped": "#8a6d00"}
+    rows: list[list[object]] = []
     for p in preds:
-        cells = [
-            (p.get("question") or "")[:400],
-            (p.get("expected_answer") or "")[:400],
-            (p.get("agent_answer") or "")[:400],
-            p.get("doc_name") or p.get("document_reference") or "—",
-            p["status"],
-            (p.get("error_message") or "")[:200],
-        ]
-        tds = []
-        for i, c in enumerate(cells):
-            style = "padding:6px;border-bottom:1px solid #2a2a2a;vertical-align:top"
-            if i == 4:
-                style += f";color:{status_colors.get(c, '#888')};font-weight:600"
-            tds.append(f"<td style='{style}'>{html.escape(str(c))}</td>")
-        out.append("<tr>" + "".join(tds) + "</tr>")
-    out.append("</tbody></table>")
-    return "".join(out)
+        status = p["status"]
+        rows.append(
+            [
+                (p.get("question") or "")[:400],
+                (p.get("expected_answer") or "")[:400],
+                (p.get("agent_answer") or "")[:400],
+                p.get("doc_name") or p.get("document_reference") or "—",
+                fmt_duration_ms(p.get("execution_time_ms")),
+                (status, f"color:{status_colors.get(status, '#888')};font-weight:600"),
+                (p.get("error_message") or "")[:200],
+            ]
+        )
+    return render_table(
+        ["Question", "Expected", "Agent answer", "Document", "Time", "Status", "Error"],
+        rows,
+        empty_msg="No predictions yet.",
+        max_height=480,
+    )
 
 
 def _run_summary(assistant: ChatAssistant | None, run_id: str | None) -> str:
@@ -104,11 +96,20 @@ def _run_summary(assistant: ChatAssistant | None, run_id: str | None) -> str:
     cfg_line = ""
     if cfg:
         cfg_line = "**Config:** " + ", ".join(f"{k}={v}" for k, v in cfg.items())
+    timing = assistant.store.get_run_timing(run_id)
+    if timing["count"]:
+        timing_line = (
+            f"**Execution time:** total {fmt_duration_ms(timing['total_ms'])} · "
+            f"avg {fmt_duration_ms(timing['avg_ms'])} (over {timing['count']} successful)"
+        )
+    else:
+        timing_line = "**Execution time:** —"
     lines = [
         f"### {run['name']}",
         run.get("description") or "",
         f"**Status:** {run['status']} · **Dataset:** `{run['dataset_id']}`",
         f"**Predictions:** {len(preds)} — success: {ok} · failed: {failed} · skipped: {skipped}",
+        timing_line,
         cfg_line,
     ]
     return "\n\n".join(l for l in lines if l)
@@ -384,15 +385,7 @@ def _metrics_table_html(assistant: ChatAssistant | None) -> str:
     metrics = assistant.store.list_metrics()
     if not metrics:
         return "<p><em>No metrics yet. Create one on the left.</em></p>"
-    out = [
-        "<table style='width:100%;border-collapse:collapse;font-size:0.9em'>",
-        "<thead><tr>"
-        + "".join(
-            f"<th style='text-align:left;padding:6px;border-bottom:1px solid #888'>{h}</th>"
-            for h in ["Name", "Type", "Aggregation", "Range", "Description", "Has judge prompt"]
-        )
-        + "</tr></thead><tbody>",
-    ]
+    rows: list[list[object]] = []
     for m in metrics:
         meta = m.get("metadata") or {}
         mn = meta.get("min")
@@ -403,24 +396,21 @@ def _metrics_table_html(assistant: ChatAssistant | None) -> str:
             range_str = "unbounded"
         else:
             range_str = f"[{'-∞' if mn is None else mn}, {'∞' if mx is None else mx}]"
-        cells = [
-            m["name"],
-            m["type"],
-            m["aggregation"],
-            range_str,
-            (m.get("description") or "")[:200],
-            "yes" if (m.get("judge_prompt") or "").strip() else "no",
-        ]
-        out.append(
-            "<tr>"
-            + "".join(
-                f"<td style='padding:6px;border-bottom:1px solid #2a2a2a;vertical-align:top'>{html.escape(str(c))}</td>"
-                for c in cells
-            )
-            + "</tr>"
+        rows.append(
+            [
+                m["name"],
+                m["type"],
+                m["aggregation"],
+                range_str,
+                (m.get("description") or "")[:200],
+                "yes" if (m.get("judge_prompt") or "").strip() else "no",
+            ]
         )
-    out.append("</tbody></table>")
-    return "".join(out)
+    return render_table(
+        ["Name", "Type", "Aggregation", "Range", "Description", "Has judge prompt"],
+        rows,
+        empty_msg="No metrics yet. Create one on the left.",
+    )
 
 
 def _parse_metadata(raw: str | None) -> tuple[dict, str | None]:
@@ -768,41 +758,35 @@ def _metric_multi_choices(assistant: ChatAssistant | None) -> list[tuple[str, st
 def _aggregates_html(assistant: ChatAssistant | None, judge_run_id: str | None) -> str:
     if assistant is None or not judge_run_id:
         return ""
-    rows = assistant.store.aggregate_judge_run(judge_run_id)
-    if not rows:
+    aggs = assistant.store.aggregate_judge_run(judge_run_id)
+    if not aggs:
         return "<p><em>No aggregates yet — score predictions to populate.</em></p>"
-    out = [
-        "<table style='width:100%;border-collapse:collapse;font-size:0.9em'>",
-        "<thead><tr>"
-        + "".join(
-            f"<th style='text-align:left;padding:6px;border-bottom:1px solid #888'>{h}</th>"
-            for h in ["Metric", "Agg", "Score", "Judged", "Missing", "Total"]
+    total_ms = aggs[0].get("total_execution_time_ms")
+    avg_ms = aggs[0].get("avg_execution_time_ms")
+    timing_line = ""
+    if total_ms:
+        timing_line = (
+            f"<p style='opacity:0.8;margin:4px 0'><b>Execution time:</b> "
+            f"total {html.escape(fmt_duration_ms(total_ms))} · "
+            f"avg {html.escape(fmt_duration_ms(avg_ms))}</p>"
         )
-        + "</tr></thead><tbody>",
-    ]
-    for r in rows:
-        score = r["score"]
-        score_str = (
-            "—" if score is None else (f"{score:.3f}" if isinstance(score, float) else str(score))
-        )
-        cells = [
+    rows: list[list[object]] = [
+        [
             r["metric_name"],
             r["aggregation"],
-            score_str,
+            fmt_score(r["score"]),
             r["judged_count"],
             r["missing_count"],
             r["total_predictions"],
         ]
-        out.append(
-            "<tr>"
-            + "".join(
-                f"<td style='padding:6px;border-bottom:1px solid #2a2a2a'>{html.escape(str(c))}</td>"
-                for c in cells
-            )
-            + "</tr>"
-        )
-    out.append("</tbody></table>")
-    return "".join(out)
+        for r in aggs
+    ]
+    table = render_table(
+        ["Metric", "Agg", "Score", "Judged", "Missing", "Total"],
+        rows,
+        empty_msg="No aggregates yet — score predictions to populate.",
+    )
+    return timing_line + table
 
 
 def _prediction_view_html(prediction: dict | None) -> str:

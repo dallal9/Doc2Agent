@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import random
 import re
+import time
 from collections import defaultdict
 from typing import Any, Awaitable, Callable
 
@@ -164,6 +165,7 @@ async def _run_one(
     annotation_id = ann["annotation_id"]
     doc_id = ann.get("doc_id")
     store = assistant.store
+    t0 = time.perf_counter()
     try:
         prompt, deps = _build_eval_prompt(
             assistant,
@@ -172,6 +174,7 @@ async def _run_one(
             spans=ann.get("spans"),
         )
         result = await run_agent(assistant.main, prompt, deps=deps, label="eval")
+        elapsed_ms = int((time.perf_counter() - t0) * 1000)
         raw_output = result.output or ""
         answer, reasoning = _split_think(raw_output)
         context = _extract_context(result)
@@ -188,9 +191,11 @@ async def _run_one(
             context_used=context,
             status="success",
             error_message=None,
+            execution_time_ms=elapsed_ms,
         )
         return "success"
     except Exception as e:
+        elapsed_ms = int((time.perf_counter() - t0) * 1000)
         logger.exception("Prediction failed for annotation=%s", annotation_id)
         store.save_prediction(
             run_id=run_id,
@@ -202,6 +207,7 @@ async def _run_one(
             context_used=None,
             status="failed",
             error_message=str(e),
+            execution_time_ms=elapsed_ms,
         )
         return "failed"
 
