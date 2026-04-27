@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 
 import gradio as gr
@@ -137,8 +138,14 @@ def _on_select_doc(doc_id: str | None, assistant: ChatAssistant | None):
     return pdf_html, _format_metadata(assistant, doc_id), _format_enrichment(assistant, doc_id)
 
 
-async def on_documents_upload(file_path, assistant: ChatAssistant | None):
-    if file_path is None or assistant is None:
+async def on_documents_upload(file_paths, assistant: ChatAssistant | None):
+    """Upload one or many PDFs.
+
+    Files are ingested in parallel up to `DOC_INGESTION_CONCURRENCY`; pages
+    within each document up to `PAGE_INGESTION_CONCURRENCY`. Both are set in
+    System config.
+    """
+    if not file_paths or assistant is None:
         yield (
             assistant,
             "No file uploaded.",
@@ -149,45 +156,73 @@ async def on_documents_upload(file_path, assistant: ChatAssistant | None):
         )
         return
 
-    original_name = os.path.basename(file_path)
+    if isinstance(file_paths, str):
+        file_paths = [file_paths]
+
+    total = len(file_paths)
+    multi = total > 1
+    file_concurrency = max(1, int(os.getenv("DOC_INGESTION_CONCURRENCY", "1") or "1"))
+    file_sem = asyncio.Semaphore(file_concurrency)
+    counter = {"done": 0}
+    last_doc_id = None
+
+    async def _ingest_one(path: str) -> tuple[str, str]:
+        nonlocal last_doc_id
+        name = os.path.basename(path)
+        async with file_sem:
+            result = ""
+            async for event in ingest_upload_pdf_stream(
+                assistant,
+                path,
+                name,
+                use_enrichment=USE_ENRICHMENT,
+                show_ingestion_logs=SHOW_INGESTION_LOGS,
+                # When uploading a batch, don't race on the assistant's
+                # active-document state — set only the last completed one.
+                set_active=not multi,
+            ):
+                kind, *rest = event
+                if kind == "done":
+                    result = str(rest[0])
+            counter["done"] += 1
+            if not multi:
+                last_doc_id = assistant.document_id
+            else:
+                meta = assistant.store.get_document_by_path(path)
+                if meta:
+                    last_doc_id = meta.doc_id
+            return name, result
+
     yield (
         assistant,
-        f"Ingesting **{original_name}**...",
+        f"Ingesting {total} file(s) (up to {file_concurrency} in parallel)...",
         gr.update(),
         _pdf_iframe(None),
         _format_metadata(None, None),
         "",
     )
 
-    result = ""
-    async for event in ingest_upload_pdf_stream(
-        assistant,
-        file_path,
-        original_name,
-        use_enrichment=USE_ENRICHMENT,
-        show_ingestion_logs=SHOW_INGESTION_LOGS,
-    ):
-        kind, *rest = event
-        if kind == "progress":
-            current, total = rest[0], rest[1]
-            yield (
-                assistant,
-                f"Ingesting **{original_name}**... ({current}/{total})",
-                gr.update(),
-                _pdf_iframe(None),
-                _format_metadata(None, None),
-                "",
-            )
-        else:
-            result = str(rest[0])
+    tasks = [asyncio.create_task(_ingest_one(p)) for p in file_paths]
+    summaries: list[str] = []
+    for coro in asyncio.as_completed(tasks):
+        name, result = await coro
+        summaries.append(f"- **{name}**: {result}")
+        yield (
+            assistant,
+            f"Ingested {counter['done']}/{total} file(s)...",
+            gr.update(choices=_doc_choices(assistant)),
+            _pdf_iframe(None),
+            _format_metadata(None, None),
+            "",
+        )
 
-    doc_id = assistant.document_id
     choices = _doc_choices(assistant)
-    pdf_html, meta_md, enrich_md = _on_select_doc(doc_id, assistant)
+    pdf_html, meta_md, enrich_md = _on_select_doc(last_doc_id, assistant)
+    summary_md = f"✅ Ingested {total} file(s).\n\n" + "\n".join(summaries)
     yield (
         assistant,
-        f"**{original_name}** loaded. {result}",
-        gr.update(choices=choices, value=doc_id),
+        summary_md,
+        gr.update(choices=choices, value=last_doc_id),
         pdf_html,
         meta_md,
         enrich_md,
@@ -254,7 +289,12 @@ def build_documents_tab(assistant_state: gr.State):
     with gr.Row():
         with gr.Column(scale=1, min_width=280):
             gr.Markdown("### Documents")
-            file_upload = gr.File(label="Upload PDF", file_types=[".pdf"], type="filepath")
+            file_upload = gr.File(
+                label="Upload PDF(s)",
+                file_types=[".pdf"],
+                type="filepath",
+                file_count="multiple",
+            )
             ops_status_md = gr.Markdown("")
             doc_dd = gr.Dropdown(label="Cached Documents", choices=[], interactive=True)
             with gr.Row():
