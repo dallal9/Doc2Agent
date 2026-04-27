@@ -7,6 +7,7 @@ from src.bootstrap import init_app
 
 init_app()
 
+from app.adhoc_tab import build_switch_file_tab, on_adhoc_tab_load
 from app.annotation_tab import annotator_head_script, build_annotation_tab, on_tab_load
 from app.dashboard_tab import (
     build_data_dashboard_tab,
@@ -15,6 +16,7 @@ from app.dashboard_tab import (
 )
 from app.datasets_tab import build_datasets_tab
 from app.datasets_tab import on_tab_load as on_datasets_tab_load
+from app.documents_tab import build_documents_tab, on_documents_tab_load
 from app.evaluation_tab import (
     build_execution_run_tab,
     build_judge_run_tab,
@@ -641,10 +643,12 @@ def _build_homepage():
     )
     with gr.Row():
         gr.Button("Chat", link="./chat", variant="primary", size="lg", scale=1)
+        gr.Button("Documents", link="./documents", size="lg", scale=1)
         gr.Button("Datasets", link="./datasets", size="lg", scale=1)
         gr.Button("Evaluation", link="./evaluation", size="lg", scale=1)
         gr.Button("Dashboard", link="./dashboard", size="lg", scale=1)
         gr.Button("Config", link="./_config", size="lg", scale=1)
+        gr.Button("Ad-hoc", link="./ad-hoc", size="lg", scale=1)
     gr.Markdown(
         '<div style="text-align:center; margin-top:0.5em; font-size:0.9em; opacity:0.8">'
         "<strong>Chat</strong> — Q&amp;A with your PDFs. "
@@ -680,6 +684,43 @@ def create_app() -> gr.Blocks:
                 status_md,
                 session_id_state,
                 session_dropdown,
+            ],
+        )
+
+    # Documents page — browse cached documents with PDF preview + enrichment
+    with demo.route("Documents") as documents_page:
+        docs_assistant_state = gr.State(value=None)
+        with gr.Tabs():
+            with gr.Tab("Browse Documents"):
+                docs_dd, docs_meta_md, docs_pdf_html, docs_enrichment_md = build_documents_tab(
+                    docs_assistant_state
+                )
+        documents_page.load(
+            fn=on_documents_tab_load,
+            inputs=[docs_assistant_state],
+            outputs=[docs_assistant_state, docs_dd],
+        )
+
+    # Ad-hoc page — quick experimental utilities (no validation)
+    with demo.route("Ad-hoc") as adhoc_page:
+        adhoc_assistant_state = gr.State(value=None)
+        with gr.Tabs():
+            with gr.Tab("Switch File ID"):
+                (
+                    adhoc_source_dd,
+                    adhoc_old_doc_dd,
+                    adhoc_new_doc_dd,
+                    _,
+                    _,
+                ) = build_switch_file_tab(adhoc_assistant_state)
+        adhoc_page.load(
+            fn=on_adhoc_tab_load,
+            inputs=[adhoc_assistant_state],
+            outputs=[
+                adhoc_assistant_state,
+                adhoc_source_dd,
+                adhoc_old_doc_dd,
+                adhoc_new_doc_dd,
             ],
         )
 
