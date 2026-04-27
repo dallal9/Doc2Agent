@@ -18,6 +18,7 @@ from src.schemas import Span
 logger = setup_logging("annotation_tab")
 
 _ANNOTATOR_JS = Path(__file__).parent / "static" / "annotator.js"
+USE_ENRICHMENT = os.getenv("USE_ENRICHMENT", "true").lower() == "true"
 
 
 def annotator_head_script() -> str:
@@ -106,7 +107,9 @@ async def on_upload(file_path, assistant):
         f"Parsing {original_name}...",
     )
     t0 = time.perf_counter()
-    result = await assistant.ingest_pdf(file_path, enrich=False, original_filename=original_name)
+    result = await assistant.ingest_pdf(
+        file_path, enrich=USE_ENRICHMENT, original_filename=original_name
+    )
     elapsed = time.perf_counter() - t0
     doc_id = assistant.document_id
     url = _pdf_url(assistant, doc_id)

@@ -1239,7 +1239,7 @@ def build_judge_run_tab(assistant_state: gr.State):
                 metrics_multi = gr.Dropdown(
                     label="Metrics", choices=[], multiselect=True, interactive=True, scale=3
                 )
-                gr.Button("Manage metrics →", link="../_config", size="sm", scale=1)
+                gr.Button("Manage metrics →", link="../metrics", size="sm", scale=1)
             judge_type_rd = gr.Radio(label="Judge type", choices=["manual", "llm"], value="manual")
             jr_keyword = gr.Textbox(
                 label="Keyword (optional)",
