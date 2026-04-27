@@ -19,6 +19,13 @@ import gradio as gr
 
 from src.config.env_schema import ENV_VARS, EnvVar, vars_by_group
 from src.config.env_writer import write_env
+from src.config_versions import (
+    current_general_state,
+    general_allowed_keys,
+    get_version,
+    save_version,
+    version_choices,
+)
 from src.logging import setup_logging
 
 logger = setup_logging("system_tab")
@@ -236,5 +243,81 @@ def build_system_tab(assistant_state: gr.State | None = None):
     save_live_btn.click(fn=on_save_live, inputs=all_inputs, outputs=[status_md])
     save_only_btn.click(fn=on_save_only, inputs=all_inputs, outputs=[status_md])
     save_restart_btn.click(fn=on_save_restart, inputs=all_inputs, outputs=[status_md])
+
+    # ---- Versioning (general / non-secret env) ----
+    gr.Markdown(
+        "### Versions\n"
+        "Snapshot the current non-secret env values. Tokens (e.g. "
+        "`OPENROUTER_API_KEY`) are **never** stored in a version."
+    )
+    with gr.Row():
+        version_dd = gr.Dropdown(
+            label="Existing versions",
+            choices=version_choices("general"),
+            value=None,
+            interactive=True,
+            scale=3,
+        )
+        load_version_btn = gr.Button("Load into form", size="sm", scale=1)
+        refresh_versions_btn = gr.Button("Refresh", size="sm", scale=1)
+
+    version_label_in = gr.Textbox(
+        label="Label (optional)",
+        placeholder="e.g. baseline, low-temp, eval-v3",
+    )
+    version_desc_in = gr.Textbox(label="Description (optional)", lines=2)
+    save_version_btn = gr.Button("Save current values as new version")
+    version_status_md = gr.Markdown("")
+
+    all_keys = live_keys + restart_keys
+
+    def on_save_version(label, desc, *values):
+        try:
+            updates = _collect_updates(all_keys, list(values))
+        except ValueError as exc:
+            return f"❌ {exc}", gr.update()
+        # Filter to allowlist (excludes secrets) and drop empty strings.
+        allowed = set(general_allowed_keys())
+        content = {k: v for k, v in updates.items() if k in allowed and v != ""}
+        ver = save_version("general", content, label=label, description=desc)
+        logger.info("Saved general config version=%s keys=%d", ver.id, len(content))
+        msg = (
+            f"📌 Snapshot saved as `{ver.id}`"
+            + (f" (`{ver.label}`)" if ver.label else "")
+            + f" — {len(content)} key(s)."
+        )
+        return msg, gr.update(choices=version_choices("general"), value=ver.id)
+
+    def on_load_version(version_id):
+        if not version_id:
+            return [gr.update() for _ in all_inputs] + ["Select a version to load."]
+        v = get_version("general", version_id)
+        if v is None:
+            return [gr.update() for _ in all_inputs] + [f"Version `{version_id}` not found."]
+        content = v.content or {}
+        updates = []
+        for key in all_keys:
+            var = next((vv for vv in ENV_VARS if vv.key == key), None)
+            if var is None:
+                updates.append(gr.update())
+                continue
+            raw = content.get(key, "")
+            updates.append(gr.update(value=_coerce_for_input(var, str(raw))))
+        return updates + [f"Loaded version `{v.id}` into form — click **Save** to make it active."]
+
+    def on_refresh_versions():
+        return gr.update(choices=version_choices("general"))
+
+    save_version_btn.click(
+        fn=on_save_version,
+        inputs=[version_label_in, version_desc_in, *all_inputs],
+        outputs=[version_status_md, version_dd],
+    )
+    load_version_btn.click(
+        fn=on_load_version,
+        inputs=[version_dd],
+        outputs=[*all_inputs, version_status_md],
+    )
+    refresh_versions_btn.click(fn=on_refresh_versions, outputs=[version_dd])
 
     return status_md
