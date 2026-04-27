@@ -17,6 +17,7 @@ from app.dashboard_tab import (
 from app.datasets_tab import build_datasets_tab
 from app.datasets_tab import on_tab_load as on_datasets_tab_load
 from app.documents_tab import build_documents_tab, on_documents_tab_load
+from app.pdf_ingest import ingest_upload_pdf_stream
 from app.evaluation_tab import (
     build_execution_run_tab,
     build_judge_run_tab,
@@ -199,35 +200,24 @@ async def on_upload(file_path, assistant, history):
     ]
     yield assistant, original_name, file_path, f"Ingesting {original_name}...", history, gr.update()
 
-    if SHOW_INGESTION_LOGS:
-        progress_updates: asyncio.Queue[tuple[int, int]] = asyncio.Queue()
-
-        async def on_progress(current: int, total: int):
-            await progress_updates.put((current, total))
-
-        ingest_task = asyncio.create_task(
-            assistant.ingest_pdf(
-                file_path,
-                enrich=USE_ENRICHMENT,
-                on_progress=on_progress,
-                original_filename=original_name,
-            )
-        )
-        while not ingest_task.done():
-            try:
-                current, total = await asyncio.wait_for(progress_updates.get(), timeout=0.25)
-            except TimeoutError:
-                continue
+    result = ""
+    async for event in ingest_upload_pdf_stream(
+        assistant,
+        file_path,
+        original_name,
+        use_enrichment=USE_ENRICHMENT,
+        show_ingestion_logs=SHOW_INGESTION_LOGS,
+    ):
+        kind, *rest = event
+        if kind == "progress":
+            current, total = rest[0], rest[1]
             history = _upsert_last_assistant(
                 history, f"Ingesting **{original_name}**... ({current}/{total})"
             )
             yield assistant, original_name, file_path, f"Ingesting {original_name}...", history, gr.update()
-        result = await ingest_task
-    else:
-        result = await assistant.ingest_pdf(
-            file_path, enrich=USE_ENRICHMENT, original_filename=original_name
-        )
-    assistant.sync_session_document()
+        else:
+            result = str(rest[0])
+
     history[-1] = {"role": "assistant", "content": f"**{original_name}** loaded. {result}"}
     choices = _doc_choices(assistant)
     yield (
@@ -317,52 +307,6 @@ async def on_load_doc(doc_id, assistant, history):
     file_path = meta.file_path if meta else None
     history = history + [{"role": "assistant", "content": result_msg}]
     return assistant, file_name, file_path, f"**Attached:** {file_name}", history
-
-
-async def on_delete_doc(doc_id, assistant, current_fname, history):
-    if not doc_id or assistant is None:
-        return assistant, current_fname, None, "No document selected.", history, gr.update()
-
-    meta = assistant.store.get_document_metadata(doc_id)
-    fname = meta.file_name if meta else doc_id
-    result_msg = assistant.delete_cached_document(doc_id)
-    history = history + [{"role": "assistant", "content": f"Deleted {fname}. {result_msg}"}]
-
-    new_fname = current_fname
-    status = f"**Attached:** {current_fname}" if current_fname else "No file attached."
-    if current_fname == fname:
-        new_fname = None
-        status = "No file attached."
-
-    choices = _doc_choices(assistant)
-    return assistant, new_fname, None, status, history, gr.update(choices=choices, value=None)
-
-
-async def on_flush_cache(doc_id, assistant, history):
-    if assistant is None:
-        return history, gr.update()
-    if not doc_id:
-        return history, gr.update()
-
-    count = assistant.store.flush_query_cache(doc_id)
-    meta = assistant.store.get_document_metadata(doc_id)
-    fname = meta.file_name if meta else doc_id
-    history = history + [
-        {"role": "assistant", "content": f"Flushed {count} cached queries for {fname}."}
-    ]
-    choices = _doc_choices(assistant)
-    return history, gr.update(choices=choices, value=None)
-
-
-async def on_flush_all(assistant, history):
-    if assistant is None:
-        return history, gr.update()
-    count = assistant.store.flush_query_cache(None)
-    history = history + [
-        {"role": "assistant", "content": f"Flushed {count} cached queries (all documents)."}
-    ]
-    choices = _doc_choices(assistant)
-    return history, gr.update(choices=choices, value=None)
 
 
 async def on_clean_empty_sessions(assistant, session_id, history):
@@ -473,14 +417,7 @@ def build_chat_tab():
             file_upload = gr.File(label="Upload PDF", file_types=[".pdf"], type="filepath")
             status_md = gr.Markdown("No file attached.")
             doc_dropdown = gr.Dropdown(label="Cached Documents", choices=[], interactive=True)
-            with gr.Row():
-                load_btn = gr.Button("Load", size="sm")
-                delete_btn = gr.Button("Delete", variant="stop", size="sm")
-            with gr.Row():
-                flush_btn = gr.Button("Clear Cached Replies (Selected Doc)", size="sm")
-                flush_all_btn = gr.Button(
-                    "Clear Cached Replies (All Docs)", variant="stop", size="sm"
-                )
+            load_btn = gr.Button("Load", size="sm")
             detach_btn = gr.Button("Detach File", size="sm")
             gr.Markdown("### Sessions")
             session_dropdown = gr.Dropdown(label="Recent Sessions", choices=[], interactive=True)
@@ -559,31 +496,6 @@ def build_chat_tab():
         fn=on_load_doc,
         inputs=[doc_dropdown, assistant_state, chatbot],
         outputs=[assistant_state, file_name_state, file_path_state, status_md, chatbot],
-    )
-
-    delete_btn.click(
-        fn=on_delete_doc,
-        inputs=[doc_dropdown, assistant_state, file_name_state, chatbot],
-        outputs=[
-            assistant_state,
-            file_name_state,
-            file_path_state,
-            status_md,
-            chatbot,
-            doc_dropdown,
-        ],
-    )
-
-    flush_btn.click(
-        fn=on_flush_cache,
-        inputs=[doc_dropdown, assistant_state, chatbot],
-        outputs=[chatbot, doc_dropdown],
-    )
-
-    flush_all_btn.click(
-        fn=on_flush_all,
-        inputs=[assistant_state, chatbot],
-        outputs=[chatbot, doc_dropdown],
     )
 
     detach_btn.click(

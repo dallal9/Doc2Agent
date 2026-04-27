@@ -6,19 +6,23 @@ import os
 
 import gradio as gr
 
+from app.pdf_ingest import ingest_upload_pdf_stream
 from src.chat import ChatAssistant
-from src.logging import setup_logging
 
-logger = setup_logging("documents_tab")
+USE_ENRICHMENT = os.getenv("USE_ENRICHMENT", "true").lower() == "true"
+SHOW_INGESTION_LOGS = os.getenv("SHOW_INGESTION_LOGS", "false").lower() == "true"
 
 
 def _doc_choices(assistant: ChatAssistant | None) -> list[tuple[str, str]]:
     if assistant is None:
         return []
-    return [
-        (f"{d.file_name} ({d.page_count} pages)", d.doc_id)
-        for d in assistant.list_cached_documents()
-    ]
+    choices = []
+    for doc in assistant.list_cached_documents():
+        cache_count = assistant.store.get_query_count_for_document(doc.doc_id)
+        cache_label = f" ({cache_count} cached)" if cache_count > 0 else ""
+        label = f"{doc.file_name} ({doc.page_count} pages){cache_label}"
+        choices.append((label, doc.doc_id))
+    return choices
 
 
 def _pdf_iframe(path: str | None) -> str:
@@ -133,6 +137,113 @@ def _on_select_doc(doc_id: str | None, assistant: ChatAssistant | None):
     return pdf_html, _format_metadata(assistant, doc_id), _format_enrichment(assistant, doc_id)
 
 
+async def on_documents_upload(file_path, assistant: ChatAssistant | None):
+    if file_path is None or assistant is None:
+        yield (
+            assistant,
+            "No file uploaded.",
+            gr.update(),
+            _pdf_iframe(None),
+            _format_metadata(None, None),
+            "",
+        )
+        return
+
+    original_name = os.path.basename(file_path)
+    yield (
+        assistant,
+        f"Ingesting **{original_name}**...",
+        gr.update(),
+        _pdf_iframe(None),
+        _format_metadata(None, None),
+        "",
+    )
+
+    result = ""
+    async for event in ingest_upload_pdf_stream(
+        assistant,
+        file_path,
+        original_name,
+        use_enrichment=USE_ENRICHMENT,
+        show_ingestion_logs=SHOW_INGESTION_LOGS,
+    ):
+        kind, *rest = event
+        if kind == "progress":
+            current, total = rest[0], rest[1]
+            yield (
+                assistant,
+                f"Ingesting **{original_name}**... ({current}/{total})",
+                gr.update(),
+                _pdf_iframe(None),
+                _format_metadata(None, None),
+                "",
+            )
+        else:
+            result = str(rest[0])
+
+    doc_id = assistant.document_id
+    choices = _doc_choices(assistant)
+    pdf_html, meta_md, enrich_md = _on_select_doc(doc_id, assistant)
+    yield (
+        assistant,
+        f"**{original_name}** loaded. {result}",
+        gr.update(choices=choices, value=doc_id),
+        pdf_html,
+        meta_md,
+        enrich_md,
+    )
+
+
+def on_documents_delete(doc_id: str | None, assistant: ChatAssistant | None):
+    if not doc_id or assistant is None:
+        return (
+            assistant,
+            "No document selected.",
+            gr.update(),
+            _pdf_iframe(None),
+            _format_metadata(None, None),
+            "",
+        )
+    meta = assistant.store.get_document_metadata(doc_id)
+    fname = meta.file_name if meta else doc_id
+    result_msg = assistant.delete_cached_document(doc_id)
+    choices = _doc_choices(assistant)
+    return (
+        assistant,
+        f"Deleted **{fname}**. {result_msg}",
+        gr.update(choices=choices, value=None),
+        _pdf_iframe(None),
+        _format_metadata(None, None),
+        "",
+    )
+
+
+def on_documents_flush_doc(doc_id: str | None, assistant: ChatAssistant | None):
+    if assistant is None or not doc_id:
+        return assistant, "No document selected.", gr.update()
+    count = assistant.store.flush_query_cache(doc_id)
+    meta = assistant.store.get_document_metadata(doc_id)
+    fname = meta.file_name if meta else doc_id
+    choices = _doc_choices(assistant)
+    return (
+        assistant,
+        f"Flushed {count} cached queries for **{fname}**.",
+        gr.update(choices=choices, value=doc_id),
+    )
+
+
+def on_documents_flush_all(assistant: ChatAssistant | None):
+    if assistant is None:
+        return assistant, "", gr.update()
+    count = assistant.store.flush_query_cache(None)
+    choices = _doc_choices(assistant)
+    return (
+        assistant,
+        f"Flushed {count} cached queries (all documents).",
+        gr.update(choices=choices),
+    )
+
+
 async def on_documents_tab_load(assistant: ChatAssistant | None):
     if assistant is None:
         assistant = ChatAssistant()
@@ -143,7 +254,16 @@ def build_documents_tab(assistant_state: gr.State):
     with gr.Row():
         with gr.Column(scale=1, min_width=280):
             gr.Markdown("### Documents")
+            file_upload = gr.File(label="Upload PDF", file_types=[".pdf"], type="filepath")
+            ops_status_md = gr.Markdown("")
             doc_dd = gr.Dropdown(label="Cached Documents", choices=[], interactive=True)
+            with gr.Row():
+                delete_btn = gr.Button("Delete", variant="stop", size="sm")
+            with gr.Row():
+                flush_btn = gr.Button("Clear Cached Replies (Selected Doc)", size="sm")
+                flush_all_btn = gr.Button(
+                    "Clear Cached Replies (All Docs)", variant="stop", size="sm"
+                )
             metadata_md = gr.Markdown("_Select a document._")
         with gr.Column(scale=2):
             pdf_html = gr.HTML(_pdf_iframe(None))
@@ -154,4 +274,43 @@ def build_documents_tab(assistant_state: gr.State):
         inputs=[doc_dd, assistant_state],
         outputs=[pdf_html, metadata_md, enrichment_md],
     )
+
+    file_upload.upload(
+        fn=on_documents_upload,
+        inputs=[file_upload, assistant_state],
+        outputs=[
+            assistant_state,
+            ops_status_md,
+            doc_dd,
+            pdf_html,
+            metadata_md,
+            enrichment_md,
+        ],
+    )
+
+    delete_btn.click(
+        fn=on_documents_delete,
+        inputs=[doc_dd, assistant_state],
+        outputs=[
+            assistant_state,
+            ops_status_md,
+            doc_dd,
+            pdf_html,
+            metadata_md,
+            enrichment_md,
+        ],
+    )
+
+    flush_btn.click(
+        fn=on_documents_flush_doc,
+        inputs=[doc_dd, assistant_state],
+        outputs=[assistant_state, ops_status_md, doc_dd],
+    )
+
+    flush_all_btn.click(
+        fn=on_documents_flush_all,
+        inputs=[assistant_state],
+        outputs=[assistant_state, ops_status_md, doc_dd],
+    )
+
     return doc_dd, metadata_md, pdf_html, enrichment_md
