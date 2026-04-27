@@ -557,8 +557,11 @@ def _build_homepage():
         gr.Button("Chat", link="./chat", variant="primary", size="lg", scale=1)
         gr.Button("Documents", link="./documents", size="lg", scale=1)
         gr.Button("Datasets", link="./datasets", size="lg", scale=1)
+    with gr.Row():
         gr.Button("Evaluation", link="./evaluation", size="lg", scale=1)
         gr.Button("Dashboard", link="./dashboard", size="lg", scale=1)
+        gr.Button("Metrics", link="./metrics", size="lg", scale=1)
+    with gr.Row():
         gr.Button("Config", link="./_config", size="lg", scale=1)
         gr.Button("Ad-hoc", link="./ad-hoc", size="lg", scale=1)
     gr.Markdown(
@@ -611,29 +614,6 @@ def create_app() -> gr.Blocks:
             fn=on_documents_tab_load,
             inputs=[docs_assistant_state],
             outputs=[docs_assistant_state, docs_dd],
-        )
-
-    # Ad-hoc page — quick experimental utilities (no validation)
-    with demo.route("Ad-hoc") as adhoc_page:
-        adhoc_assistant_state = gr.State(value=None)
-        with gr.Tabs():
-            with gr.Tab("Switch File ID"):
-                (
-                    adhoc_source_dd,
-                    adhoc_old_doc_dd,
-                    adhoc_new_doc_dd,
-                    _,
-                    _,
-                ) = build_switch_file_tab(adhoc_assistant_state)
-        adhoc_page.load(
-            fn=on_adhoc_tab_load,
-            inputs=[adhoc_assistant_state],
-            outputs=[
-                adhoc_assistant_state,
-                adhoc_source_dd,
-                adhoc_old_doc_dd,
-                adhoc_new_doc_dd,
-            ],
         )
 
     # Datasets page — two tabs sharing one assistant_state
@@ -744,19 +724,47 @@ def create_app() -> gr.Blocks:
             ],
         )
 
-    # Config page — Metrics and general app configuration
+    # Metrics page — scoring rubrics for judge runs (was under Config)
+    with demo.route("Metrics") as metrics_page:
+        metrics_assistant_state = gr.State(value=None)
+        with gr.Tabs():
+            with gr.Tab("Metrics"):
+                metric_dd, metrics_table, metrics_status = build_metrics_tab(metrics_assistant_state)
+
+        metrics_page.load(
+            fn=on_metrics_tab_load,
+            inputs=[metrics_assistant_state],
+            outputs=[metrics_assistant_state, metric_dd, metrics_table, metrics_status],
+        )
+
+    # Config page — app / environment configuration
     with demo.route("Config") as config_page:
         cfg_assistant_state = gr.State(value=None)
         with gr.Tabs():
-            with gr.Tab("Metrics"):
-                metric_dd, metrics_table, metrics_status = build_metrics_tab(cfg_assistant_state)
             with gr.Tab("System"):
                 build_system_tab(cfg_assistant_state)
 
-        config_page.load(
-            fn=on_metrics_tab_load,
-            inputs=[cfg_assistant_state],
-            outputs=[cfg_assistant_state, metric_dd, metrics_table, metrics_status],
+    # Ad-hoc page — quick experimental utilities (no validation)
+    with demo.route("Ad-hoc") as adhoc_page:
+        adhoc_assistant_state = gr.State(value=None)
+        with gr.Tabs():
+            with gr.Tab("Switch File ID"):
+                (
+                    adhoc_source_dd,
+                    adhoc_old_doc_dd,
+                    adhoc_new_doc_dd,
+                    _,
+                    _,
+                ) = build_switch_file_tab(adhoc_assistant_state)
+        adhoc_page.load(
+            fn=on_adhoc_tab_load,
+            inputs=[adhoc_assistant_state],
+            outputs=[
+                adhoc_assistant_state,
+                adhoc_source_dd,
+                adhoc_old_doc_dd,
+                adhoc_new_doc_dd,
+            ],
         )
 
     return demo
