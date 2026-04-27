@@ -8,26 +8,27 @@ Snapshots live at data/config_versions/<kind>/<id>.json. Secrets (env vars
 declared as type="secret" in env_schema, e.g. OPENROUTER_API_KEY) are never
 included in a snapshot. When a "general" version is applied, the secret token
 remains whatever the live process holds.
+
+Version id format mirrors the eval-run naming convention:
+    {YYYYMMDD_HHMMSS}_{kind}[_{keyword-slug}]
+e.g. ``20260427_180412_agent_baseline``. Names, labels, and descriptions are
+editable after creation; the id (= file name on disk) is immutable.
 """
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
+import re
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterator, Literal
 
-from src.agents_config.schemas import (
-    AGENTS_CONFIG_PATH_ENV,
-)
+from src.agents_config.schemas import AGENTS_CONFIG_PATH_ENV
 from src.agents_config.schemas import CONFIG_DIR as AGENT_CFG_DIR
-from src.agents_config.schemas import (
-    PROMPTS_CONFIG_PATH_ENV,
-)
+from src.agents_config.schemas import PROMPTS_CONFIG_PATH_ENV
 from src.config.env_schema import ENV_VARS
 
 Kind = Literal["agent", "general"]
@@ -47,9 +48,23 @@ class Version:
     id: str
     kind: Kind
     created_at: str
-    label: str | None
-    description: str | None
-    content: dict[str, Any]
+    content: dict[str, Any] = field(default_factory=dict)
+    name: str | None = None
+    label: str | None = None
+    description: str | None = None
+
+
+def _from_payload(data: dict) -> Version:
+    """Tolerant constructor — fills missing fields and ignores unknown ones."""
+    return Version(
+        id=data["id"],
+        kind=data.get("kind", "agent"),
+        created_at=data.get("created_at", ""),
+        content=data.get("content") or {},
+        name=data.get("name") or data.get("id"),
+        label=data.get("label"),
+        description=data.get("description"),
+    )
 
 
 # ---------- snapshotting current state ----------
@@ -85,54 +100,73 @@ def current_general_state() -> dict[str, str]:
     return out
 
 
-# ---------- save / list / get ----------
+# ---------- id generation ----------
 
 
-def _new_id(content: dict[str, Any]) -> str:
+def _slugify(s: str) -> str:
+    s = (s or "").strip().lower()
+    s = re.sub(r"[^a-z0-9]+", "-", s)
+    return s.strip("-")
+
+
+def _make_id(kind: Kind, keyword: str | None) -> str:
     stamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-    h = hashlib.sha1(
-        json.dumps(content, sort_keys=True, ensure_ascii=False).encode("utf-8")
-    ).hexdigest()[:6]
-    return f"v{stamp}_{h}"
+    parts = [stamp, kind]
+    slug = _slugify(keyword or "")
+    if slug:
+        parts.append(slug)
+    return "_".join(parts)
+
+
+def _unique_id(kind: Kind, base: str) -> str:
+    """Append _2, _3, … if a file with the same id already exists."""
+    if not (_kind_dir(kind) / f"{base}.json").exists():
+        return base
+    n = 2
+    while (_kind_dir(kind) / f"{base}_{n}.json").exists():
+        n += 1
+    return f"{base}_{n}"
+
+
+# ---------- save / list / get / update ----------
 
 
 def save_version(
     kind: Kind,
     content: dict[str, Any],
     *,
+    keyword: str | None = None,
+    name: str | None = None,
     label: str | None = None,
     description: str | None = None,
 ) -> Version:
     if kind not in KINDS:
         raise ValueError(f"Unknown kind: {kind}")
     if kind == "general":
-        # defensively strip any keys not in allowlist
         allowed = set(general_allowed_keys())
         content = {k: v for k, v in content.items() if k in allowed}
-    vid = _new_id(content)
+    vid = _unique_id(kind, _make_id(kind, keyword))
     payload = {
         "id": vid,
         "kind": kind,
         "created_at": datetime.utcnow().isoformat() + "Z",
+        "name": (name or "").strip() or vid,
         "label": (label or "").strip() or None,
         "description": (description or "").strip() or None,
         "content": content,
     }
     path = _kind_dir(kind) / f"{vid}.json"
-    if path.exists():
-        # Identical content snapshot already exists; return existing record.
-        return get_version(kind, vid)  # type: ignore[return-value]
     path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
-    return Version(**payload)
+    return _from_payload(payload)
 
 
 def list_versions(kind: Kind) -> list[Version]:
     out: list[Version] = []
-    for p in sorted(_kind_dir(kind).glob("v*.json"), reverse=True):
+    for p in sorted(_kind_dir(kind).glob("*.json"), reverse=True):
         try:
             data = json.loads(p.read_text(encoding="utf-8"))
-            out.append(Version(**data))
-        except (json.JSONDecodeError, TypeError):
+            out.append(_from_payload(data))
+        except (json.JSONDecodeError, KeyError):
             continue
     return out
 
@@ -143,17 +177,73 @@ def get_version(kind: Kind, version_id: str) -> Version | None:
     path = _kind_dir(kind) / f"{version_id}.json"
     if not path.exists():
         return None
+    return _from_payload(json.loads(path.read_text(encoding="utf-8")))
+
+
+def delete_version(kind: Kind, version_id: str) -> bool:
+    """Delete a version's snapshot file. Returns True if a file was removed."""
+    path = _kind_dir(kind) / f"{version_id}.json"
+    if not path.exists():
+        return False
+    path.unlink()
+    return True
+
+
+def update_version_meta(
+    kind: Kind,
+    version_id: str,
+    *,
+    name: str | None = None,
+    label: str | None = None,
+    description: str | None = None,
+) -> Version:
+    """Edit the human-friendly fields of an existing version."""
+    path = _kind_dir(kind) / f"{version_id}.json"
+    if not path.exists():
+        raise FileNotFoundError(f"Version not found: {kind}/{version_id}")
     data = json.loads(path.read_text(encoding="utf-8"))
-    return Version(**data)
+    if name is not None:
+        data["name"] = name.strip() or data.get("id")
+    if label is not None:
+        data["label"] = label.strip() or None
+    if description is not None:
+        data["description"] = description.strip() or None
+    path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    return _from_payload(data)
 
 
 def version_choices(kind: Kind) -> list[tuple[str, str]]:
     """(label, id) pairs for Gradio dropdowns. Most recent first."""
     out: list[tuple[str, str]] = []
     for v in list_versions(kind):
-        tag = f" — {v.label}" if v.label else ""
-        out.append((f"{v.id}{tag}", v.id))
+        nm = v.name or v.id
+        display = nm if nm == v.id else f"{nm} ({v.id})"
+        if v.label:
+            display = f"{display} — {v.label}"
+        out.append((display, v.id))
     return out
+
+
+# ---------- bootstrap default ----------
+
+
+def ensure_default_version(kind: Kind) -> Version:
+    """Guarantee at least one version exists for `kind`. Returns the latest."""
+    existing = list_versions(kind)
+    if existing:
+        return existing[0]
+    if kind == "agent":
+        content = current_agent_state()
+    else:
+        content = current_general_state()
+    return save_version(
+        kind,
+        content,
+        keyword="default",
+        name=None,
+        label="",
+        description="",
+    )
 
 
 # ---------- apply (env mutation, restorable) ----------
@@ -227,10 +317,7 @@ def apply_versions(
 def write_active_agent_files(
     version_id: str, *, tmp_dir: Path | str = "data/config_versions/_active"
 ) -> tuple[Path, Path]:
-    """Write an agent version's contents to disk (without mutating env).
-
-    Useful for callers that want to point at the files manually.
-    """
+    """Write an agent version's contents to disk (without mutating env)."""
     v = get_version("agent", version_id)
     if v is None:
         raise ValueError(f"Agent version not found: {version_id}")

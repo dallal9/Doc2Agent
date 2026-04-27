@@ -1,16 +1,17 @@
 """Config → System tab — view & edit .env values from the UI.
 
-Two sections:
-  - Live: changes apply immediately via os.environ; lazily-read settings pick
-    them up on next use (new ChatAssistant, next eval run, next agent init).
-  - Restart-required: cached at module import in gradio_app.py or attached as
-    log handlers — only effective after a full process restart.
+Versions are immutable. **Save new version** writes `.env`, snapshots a new
+version, and restarts the app so all settings (live + restart-required) are
+applied uniformly. **Delete current version** removes the selected snapshot;
+the last one cannot truly disappear — a fresh default is auto-recreated.
+
+Secrets (env vars declared as `secret` in env_schema, e.g. OPENROUTER_API_KEY)
+are never included in a version snapshot, but they ARE still written to `.env`.
 """
 
 from __future__ import annotations
 
 import json
-import logging
 import os
 import sys
 from pathlib import Path
@@ -20,7 +21,8 @@ import gradio as gr
 from src.config.env_schema import ENV_VARS, EnvVar, vars_by_group
 from src.config.env_writer import write_env
 from src.config_versions import (
-    current_general_state,
+    delete_version,
+    ensure_default_version,
     general_allowed_keys,
     get_version,
     save_version,
@@ -42,7 +44,6 @@ def _current_value(var: EnvVar) -> str:
 
 
 def _coerce_for_input(var: EnvVar, raw: str) -> object:
-    """Convert string env value into the right Gradio component value."""
     if var.type == "bool":
         return raw.lower() in ("1", "true", "yes", "on") if raw else False
     if var.type == "int":
@@ -59,7 +60,6 @@ def _coerce_for_input(var: EnvVar, raw: str) -> object:
 
 
 def _coerce_for_storage(var: EnvVar, value: object) -> str:
-    """Convert Gradio component value back to a .env string."""
     if value is None:
         return ""
     if var.type == "bool":
@@ -103,16 +103,6 @@ def _make_input(var: EnvVar) -> gr.components.Component:
     return gr.Textbox(label=label, info=info, value=current or "", placeholder=placeholder)
 
 
-def _apply_log_level() -> None:
-    """Reset root logger level from current LOG_LEVEL env value."""
-    level_name = os.getenv("LOG_LEVEL", "INFO").upper()
-    level = getattr(logging, level_name, logging.INFO)
-    root = logging.getLogger()
-    root.setLevel(level)
-    for handler in root.handlers:
-        handler.setLevel(level)
-
-
 def _collect_updates(var_keys: list[str], values: list[object]) -> dict[str, str]:
     updates: dict[str, str] = {}
     for key, value in zip(var_keys, values):
@@ -127,170 +117,136 @@ def _save_to_env(updates: dict[str, str]) -> Path:
     return write_env(updates, env_path=ENV_PATH, example_path=EXAMPLE_PATH)
 
 
-def _push_to_environ(updates: dict[str, str]) -> None:
-    for key, value in updates.items():
-        if value == "":
-            os.environ.pop(key, None)
-        else:
-            os.environ[key] = value
+def _schedule_restart() -> None:
+    import threading
+    import time
+
+    def _restart() -> None:
+        time.sleep(1.0)
+        os.execv(sys.executable, [sys.executable, *sys.argv])
+
+    threading.Thread(target=_restart, daemon=True).start()
 
 
 def build_system_tab(assistant_state: gr.State | None = None):
+    default_v = ensure_default_version("general")
+
     gr.Markdown(
         "## System — environment configuration\n"
-        "Edit values from your `.env` file. **Live** settings apply on save; "
-        "**Restart-required** settings only take effect after restarting the app."
+        "Versions are immutable snapshots stored under "
+        "`data/config_versions/general/`. Pick a version to load it into the "
+        "form; **Save new version** writes `.env`, snapshots a new version, "
+        "and restarts the app."
     )
+
+    # ---- Versions block (top) ----
+    gr.Markdown("### Versions")
+    with gr.Row():
+        version_dd = gr.Dropdown(
+            label="Version",
+            choices=version_choices("general"),
+            value=default_v.id,
+            interactive=True,
+            scale=4,
+        )
+        refresh_btn = gr.Button("Refresh", size="sm", scale=1)
+
+    status_md = gr.Markdown("")
+
+    # ---- Env-var editors ----
+    gr.Markdown("### Editor")
 
     live_keys: list[str] = []
     live_inputs: list[gr.components.Component] = []
     restart_keys: list[str] = []
     restart_inputs: list[gr.components.Component] = []
 
-    with gr.Accordion("Live settings (apply on save)", open=True):
+    with gr.Accordion("Live settings", open=True):
         for group, vars_in_group in vars_by_group(reload="live").items():
             with gr.Group():
-                gr.Markdown(f"### {group}")
+                gr.Markdown(f"#### {group}")
                 for v in vars_in_group:
                     comp = _make_input(v)
                     live_keys.append(v.key)
                     live_inputs.append(comp)
 
     with gr.Accordion("Restart-required settings", open=False):
-        gr.Markdown("_These are cached at startup. Click **Save & Restart** to apply._")
         for group, vars_in_group in vars_by_group(reload="restart").items():
             with gr.Group():
-                gr.Markdown(f"### {group}")
+                gr.Markdown(f"#### {group}")
                 for v in vars_in_group:
                     comp = _make_input(v)
                     restart_keys.append(v.key)
                     restart_inputs.append(comp)
 
-    status_md = gr.Markdown("")
+    all_inputs = live_inputs + restart_inputs
+    all_keys = live_keys + restart_keys
+
+    gr.Markdown("### New version metadata")
+    with gr.Row():
+        new_keyword_in = gr.Textbox(
+            label="Keyword (optional)",
+            placeholder="e.g. baseline / low-temp / eval-v3",
+            scale=2,
+        )
+        new_name_in = gr.Textbox(
+            label="Name (optional)",
+            placeholder="Leave blank to use the auto-generated id",
+            scale=2,
+        )
+    with gr.Row():
+        new_label_in = gr.Textbox(label="Label (optional)", scale=1)
+        new_desc_in = gr.Textbox(label="Description (optional)", scale=2)
 
     with gr.Row():
-        save_live_btn = gr.Button("Save (apply now)", variant="primary")
-        save_only_btn = gr.Button("Save (no apply)")
-        save_restart_btn = gr.Button("Save & Restart", variant="stop")
+        save_btn = gr.Button("Save new version", variant="primary")
+        delete_btn = gr.Button("Delete current version", variant="stop")
+    gr.Markdown(
+        "_**Save new version** writes the form values to `.env`, creates an "
+        "immutable snapshot, and **restarts the app** so all settings (including "
+        "restart-required ones) take effect cleanly. The OpenRouter token is "
+        "written to `.env` but never stored in a version snapshot._"
+    )
 
-    def on_save_live(*values):
+    # ---- handlers ----
+
+    def on_save(keyword, name, label, desc, *values):
         live_values = list(values[: len(live_keys)])
         restart_values = list(values[len(live_keys) :])
         try:
             live_updates = _collect_updates(live_keys, live_values)
             restart_updates = _collect_updates(restart_keys, restart_values)
         except ValueError as exc:
-            return f"❌ {exc}"
+            return f"❌ {exc}", gr.update()
         all_updates = {**live_updates, **restart_updates}
         path = _save_to_env(all_updates)
-        _push_to_environ(live_updates)
-        _apply_log_level()
-        logger.info("System tab: live save, %d keys updated, env=%s", len(all_updates), path)
-        msg = (
-            f"✅ Saved {len(all_updates)} value(s) to `{path}`. "
-            f"Live settings ({len(live_updates)}) applied. "
+
+        allowed = set(general_allowed_keys())
+        snapshot_content = {k: v for k, v in all_updates.items() if k in allowed and v != ""}
+        ver = save_version(
+            "general",
+            snapshot_content,
+            keyword=keyword,
+            name=name,
+            label=label,
+            description=desc,
         )
-        if restart_updates:
-            msg += f"{len(restart_updates)} restart-required setting(s) saved — restart to apply."
-        return msg
-
-    def on_save_only(*values):
-        live_values = list(values[: len(live_keys)])
-        restart_values = list(values[len(live_keys) :])
-        try:
-            updates = {
-                **_collect_updates(live_keys, live_values),
-                **_collect_updates(restart_keys, restart_values),
-            }
-        except ValueError as exc:
-            return f"❌ {exc}"
-        path = _save_to_env(updates)
-        logger.info("System tab: save-only, %d keys updated, env=%s", len(updates), path)
-        return f"💾 Saved {len(updates)} value(s) to `{path}`. Nothing applied yet."
-
-    def on_save_restart(*values):
-        live_values = list(values[: len(live_keys)])
-        restart_values = list(values[len(live_keys) :])
-        try:
-            updates = {
-                **_collect_updates(live_keys, live_values),
-                **_collect_updates(restart_keys, restart_values),
-            }
-        except ValueError as exc:
-            return f"❌ {exc}"
-        path = _save_to_env(updates)
         logger.warning(
-            "System tab: save & restart requested, %d keys updated, env=%s",
-            len(updates),
+            "System tab: save new version=%s, %d keys -> env=%s. Restarting.",
+            ver.id,
+            len(all_updates),
             path,
         )
-        # Schedule restart shortly so the response can flush back to the UI.
-        import threading
-
-        def _restart() -> None:
-            import time
-
-            time.sleep(1.0)
-            os.execv(sys.executable, [sys.executable, *sys.argv])
-
-        threading.Thread(target=_restart, daemon=True).start()
+        _schedule_restart()
         return (
-            f"♻️ Saved {len(updates)} value(s) to `{path}`. "
-            "Restarting now — reconnect in a few seconds."
+            f"♻️ Saved to `{path}`, snapshotted as `{ver.id}`. "
+            "Restarting now — reconnect in a few seconds.",
+            gr.update(choices=version_choices("general"), value=ver.id),
         )
 
-    all_inputs = live_inputs + restart_inputs
-    save_live_btn.click(fn=on_save_live, inputs=all_inputs, outputs=[status_md])
-    save_only_btn.click(fn=on_save_only, inputs=all_inputs, outputs=[status_md])
-    save_restart_btn.click(fn=on_save_restart, inputs=all_inputs, outputs=[status_md])
-
-    # ---- Versioning (general / non-secret env) ----
-    gr.Markdown(
-        "### Versions\n"
-        "Snapshot the current non-secret env values. Tokens (e.g. "
-        "`OPENROUTER_API_KEY`) are **never** stored in a version."
-    )
-    with gr.Row():
-        version_dd = gr.Dropdown(
-            label="Existing versions",
-            choices=version_choices("general"),
-            value=None,
-            interactive=True,
-            scale=3,
-        )
-        load_version_btn = gr.Button("Load into form", size="sm", scale=1)
-        refresh_versions_btn = gr.Button("Refresh", size="sm", scale=1)
-
-    version_label_in = gr.Textbox(
-        label="Label (optional)",
-        placeholder="e.g. baseline, low-temp, eval-v3",
-    )
-    version_desc_in = gr.Textbox(label="Description (optional)", lines=2)
-    save_version_btn = gr.Button("Save current values as new version")
-    version_status_md = gr.Markdown("")
-
-    all_keys = live_keys + restart_keys
-
-    def on_save_version(label, desc, *values):
-        try:
-            updates = _collect_updates(all_keys, list(values))
-        except ValueError as exc:
-            return f"❌ {exc}", gr.update()
-        # Filter to allowlist (excludes secrets) and drop empty strings.
-        allowed = set(general_allowed_keys())
-        content = {k: v for k, v in updates.items() if k in allowed and v != ""}
-        ver = save_version("general", content, label=label, description=desc)
-        logger.info("Saved general config version=%s keys=%d", ver.id, len(content))
-        msg = (
-            f"📌 Snapshot saved as `{ver.id}`"
-            + (f" (`{ver.label}`)" if ver.label else "")
-            + f" — {len(content)} key(s)."
-        )
-        return msg, gr.update(choices=version_choices("general"), value=ver.id)
-
-    def on_load_version(version_id):
+    def on_select_version(version_id):
         if not version_id:
-            return [gr.update() for _ in all_inputs] + ["Select a version to load."]
+            return [gr.update() for _ in all_inputs] + [""]
         v = get_version("general", version_id)
         if v is None:
             return [gr.update() for _ in all_inputs] + [f"Version `{version_id}` not found."]
@@ -303,21 +259,56 @@ def build_system_tab(assistant_state: gr.State | None = None):
                 continue
             raw = content.get(key, "")
             updates.append(gr.update(value=_coerce_for_input(var, str(raw))))
-        return updates + [f"Loaded version `{v.id}` into form — click **Save** to make it active."]
+        return updates + [f"Loaded `{v.id}` into form — click **Save new version** to apply."]
 
-    def on_refresh_versions():
+    def on_delete(version_id):
+        if not version_id:
+            return [gr.update(), *(gr.update() for _ in all_inputs), "Select a version first."]
+        removed = delete_version("general", version_id)
+        if not removed:
+            return [
+                gr.update(),
+                *(gr.update() for _ in all_inputs),
+                f"Version `{version_id}` not found.",
+            ]
+        logger.info("Deleted general config version=%s", version_id)
+        latest = ensure_default_version("general")
+        # Reload the latest version into the form so the UI matches the new active version.
+        content = latest.content or {}
+        field_updates = []
+        for key in all_keys:
+            var = next((vv for vv in ENV_VARS if vv.key == key), None)
+            if var is None:
+                field_updates.append(gr.update())
+                continue
+            raw = content.get(key, "")
+            field_updates.append(gr.update(value=_coerce_for_input(var, str(raw))))
+        return [
+            gr.update(choices=version_choices("general"), value=latest.id),
+            *field_updates,
+            f"🗑️ Deleted `{version_id}`. Active version: `{latest.id}`.",
+        ]
+
+    def on_refresh():
         return gr.update(choices=version_choices("general"))
 
-    save_version_btn.click(
-        fn=on_save_version,
-        inputs=[version_label_in, version_desc_in, *all_inputs],
-        outputs=[version_status_md, version_dd],
+    # ---- wiring ----
+
+    save_btn.click(
+        fn=on_save,
+        inputs=[new_keyword_in, new_name_in, new_label_in, new_desc_in, *all_inputs],
+        outputs=[status_md, version_dd],
     )
-    load_version_btn.click(
-        fn=on_load_version,
+    delete_btn.click(
+        fn=on_delete,
         inputs=[version_dd],
-        outputs=[*all_inputs, version_status_md],
+        outputs=[version_dd, *all_inputs, status_md],
     )
-    refresh_versions_btn.click(fn=on_refresh_versions, outputs=[version_dd])
+    version_dd.change(
+        fn=on_select_version,
+        inputs=[version_dd],
+        outputs=[*all_inputs, status_md],
+    )
+    refresh_btn.click(fn=on_refresh, outputs=[version_dd])
 
     return status_md

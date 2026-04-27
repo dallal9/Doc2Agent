@@ -184,6 +184,13 @@ class ChatAssistant:
         doc.metadata.file_path = str(permanent_path)
         logger.info("Copied PDF to: %s", permanent_path)
 
+        ing_cfg = self.config.agents.get("ingestion")
+        doc.metadata.ingestion_config = {
+            "use_enrichment": bool(enrich),
+            "agent": ing_cfg.model_dump() if ing_cfg else None,
+            "prompt": self.prompts.ingestion if enrich else None,
+        }
+
         if enrich:
             ing_agent = create_ingestion_agent(self.config, self.prompts)
             total = len(doc.pages)

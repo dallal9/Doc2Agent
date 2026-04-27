@@ -1,14 +1,15 @@
 """Config → Agent Config tab — edit agents.json + prompts.json with versioning.
 
-Edits write back to the live config files (same paths the rest of the app
-reads from). A "Save as new version" button captures an immutable snapshot
-under data/config_versions/agent/ that can later be loaded into the form
-or pinned to an evaluation run.
+Versions are immutable. Editing the JSON and clicking **Save new version**
+writes the live files and snapshots a new version in one step. Existing
+versions can only be deleted, not edited; if the last one is removed, a
+fresh default is auto-recreated from the current live state.
 """
 
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import gradio as gr
@@ -19,7 +20,8 @@ from src.agents_config.schemas import (
     PROMPTS_CONFIG_PATH_ENV,
 )
 from src.config_versions import (
-    current_agent_state,
+    delete_version,
+    ensure_default_version,
     get_version,
     save_version,
     version_choices,
@@ -30,15 +32,11 @@ logger = setup_logging("agent_config_tab")
 
 
 def _agents_path() -> Path:
-    import os
-
     raw = os.getenv(AGENTS_CONFIG_PATH_ENV)
     return Path(raw) if raw else (CONFIG_DIR / "agents.json")
 
 
 def _prompts_path() -> Path:
-    import os
-
     raw = os.getenv(PROMPTS_CONFIG_PATH_ENV)
     return Path(raw) if raw else (CONFIG_DIR / "prompts.json")
 
@@ -61,62 +59,78 @@ def _validate_json(label: str, text: str) -> tuple[dict | None, str | None]:
 
 
 def build_agent_config_tab():
+    default_v = ensure_default_version("agent")
+
     gr.Markdown(
         "## Agent Config — `agents.json` and `prompts.json`\n"
-        "Edit live config files and (optionally) capture a versioned snapshot. "
-        "Versions are immutable JSON files under `data/config_versions/agent/` "
-        "and can be pinned to an evaluation run for reproducibility."
+        "Versions are immutable snapshots stored under "
+        "`data/config_versions/agent/`. Pick a version to load it into the "
+        "editor; **Save new version** writes the editor contents to the live "
+        "files and snapshots a new version."
     )
 
+    # ---- Versions block (top) ----
+    gr.Markdown("### Versions")
+    with gr.Row():
+        version_dd = gr.Dropdown(
+            label="Version",
+            choices=version_choices("agent"),
+            value=default_v.id,
+            interactive=True,
+            scale=4,
+        )
+        refresh_btn = gr.Button("Refresh", size="sm", scale=1)
+
+    status_md = gr.Markdown("")
+
+    # ---- Editors ----
+    gr.Markdown("### Editor")
     agents_path = _agents_path()
     prompts_path = _prompts_path()
-
     with gr.Row():
         with gr.Column(scale=1, min_width=420):
-            gr.Markdown(f"### `agents.json`  \n_{agents_path}_")
+            gr.Markdown(f"#### `agents.json`  \n_{agents_path}_")
             agents_box = gr.Code(
                 value=_read_text(agents_path),
                 language="json",
                 lines=22,
-                label=None,
             )
         with gr.Column(scale=1, min_width=420):
-            gr.Markdown(f"### `prompts.json`  \n_{prompts_path}_")
+            gr.Markdown(f"#### `prompts.json`  \n_{prompts_path}_")
             prompts_box = gr.Code(
                 value=_read_text(prompts_path),
                 language="json",
                 lines=22,
-                label=None,
             )
 
-    status_md = gr.Markdown("")
-
+    gr.Markdown("### New version metadata")
     with gr.Row():
-        save_files_btn = gr.Button("Save to files", variant="primary")
-        save_version_btn = gr.Button("Save as new version", variant="secondary")
-        reload_btn = gr.Button("Reload from disk", size="sm")
-
-    gr.Markdown("### Versions")
-    with gr.Row():
-        version_dd = gr.Dropdown(
-            label="Existing versions",
-            choices=version_choices("agent"),
-            value=None,
-            interactive=True,
-            scale=3,
+        new_keyword_in = gr.Textbox(
+            label="Keyword (optional)",
+            placeholder="e.g. baseline / gemma-strict / prompt-v2",
+            scale=2,
         )
-        load_version_btn = gr.Button("Load into editor", size="sm", scale=1)
-        refresh_btn = gr.Button("Refresh", size="sm", scale=1)
+        new_name_in = gr.Textbox(
+            label="Name (optional)",
+            placeholder="Leave blank to use the auto-generated id",
+            scale=2,
+        )
+    with gr.Row():
+        new_label_in = gr.Textbox(label="Label (optional)", scale=1)
+        new_desc_in = gr.Textbox(label="Description (optional)", scale=2)
 
-    version_label_in = gr.Textbox(
-        label="Label (optional)",
-        placeholder="e.g. baseline, gemma-strict, prompt-v2",
+    with gr.Row():
+        save_btn = gr.Button("Save new version", variant="primary")
+        delete_btn = gr.Button("Delete current version", variant="stop")
+    gr.Markdown(
+        "_**Save new version** writes the editor contents to `agents.json` and "
+        "`prompts.json` and creates an immutable snapshot. New ChatAssistant "
+        "instances pick up the live files automatically — no app restart required._"
     )
-    version_desc_in = gr.Textbox(label="Description (optional)", lines=2)
 
     # ---- handlers ----
 
-    def on_save_files(agents_text, prompts_text):
+    def on_save(agents_text, prompts_text, keyword, name, label, desc):
         agents, err = _validate_json("agents.json", agents_text)
         if err:
             return f"❌ {err}", gr.update()
@@ -129,69 +143,77 @@ def build_agent_config_tab():
         _prompts_path().write_text(
             json.dumps(prompts, indent=2, ensure_ascii=False), encoding="utf-8"
         )
-        logger.info("Agent config saved to files")
-        return (
-            f"✅ Saved to `{_agents_path()}` and `{_prompts_path()}`. "
-            "New ChatAssistant instances will pick up the changes.",
-            gr.update(),
-        )
-
-    def on_save_version(agents_text, prompts_text, label, desc):
-        agents, err = _validate_json("agents.json", agents_text)
-        if err:
-            return f"❌ {err}", gr.update()
-        prompts, err = _validate_json("prompts.json", prompts_text)
-        if err:
-            return f"❌ {err}", gr.update()
         v = save_version(
             "agent",
             {"agents": agents, "prompts": prompts},
+            keyword=keyword,
+            name=name,
             label=label,
             description=desc,
         )
         logger.info("Saved agent config version=%s", v.id)
         return (
-            f"📌 Snapshot saved as `{v.id}`" + (f" (`{v.label}`)" if v.label else "") + ".",
+            f"✅ Saved live files and snapshotted as `{v.id}`.",
             gr.update(choices=version_choices("agent"), value=v.id),
         )
 
-    def on_reload():
-        return (
-            _read_text(_agents_path()),
-            _read_text(_prompts_path()),
-            "Reloaded from disk.",
-        )
-
-    def on_load_version(version_id):
+    def on_select_version(version_id):
         if not version_id:
-            return gr.update(), gr.update(), "Select a version to load."
+            return gr.update(), gr.update(), ""
         v = get_version("agent", version_id)
         if v is None:
             return gr.update(), gr.update(), f"Version `{version_id}` not found."
         agents_text = json.dumps(v.content.get("agents") or {}, indent=2, ensure_ascii=False)
         prompts_text = json.dumps(v.content.get("prompts") or {}, indent=2, ensure_ascii=False)
+        return agents_text, prompts_text, f"Loaded `{v.id}` into editor."
+
+    def on_delete(version_id):
+        if not version_id:
+            return gr.update(), gr.update(), gr.update(), "Select a version first."
+        removed = delete_version("agent", version_id)
+        if not removed:
+            return (
+                gr.update(),
+                gr.update(),
+                gr.update(),
+                f"Version `{version_id}` not found.",
+            )
+        logger.info("Deleted agent config version=%s", version_id)
+        # Ensure at least one version remains.
+        latest = ensure_default_version("agent")
+        agents_text = json.dumps(latest.content.get("agents") or {}, indent=2, ensure_ascii=False)
+        prompts_text = json.dumps(latest.content.get("prompts") or {}, indent=2, ensure_ascii=False)
         return (
+            gr.update(choices=version_choices("agent"), value=latest.id),
             agents_text,
             prompts_text,
-            f"Loaded version `{v.id}` into editor — click **Save to files** to make it active.",
+            f"🗑️ Deleted `{version_id}`. Active version: `{latest.id}`.",
         )
 
     def on_refresh():
         return gr.update(choices=version_choices("agent"))
 
-    save_files_btn.click(
-        fn=on_save_files,
-        inputs=[agents_box, prompts_box],
+    # ---- wiring ----
+
+    save_btn.click(
+        fn=on_save,
+        inputs=[
+            agents_box,
+            prompts_box,
+            new_keyword_in,
+            new_name_in,
+            new_label_in,
+            new_desc_in,
+        ],
         outputs=[status_md, version_dd],
     )
-    save_version_btn.click(
-        fn=on_save_version,
-        inputs=[agents_box, prompts_box, version_label_in, version_desc_in],
-        outputs=[status_md, version_dd],
+    delete_btn.click(
+        fn=on_delete,
+        inputs=[version_dd],
+        outputs=[version_dd, agents_box, prompts_box, status_md],
     )
-    reload_btn.click(fn=on_reload, outputs=[agents_box, prompts_box, status_md])
-    load_version_btn.click(
-        fn=on_load_version,
+    version_dd.change(
+        fn=on_select_version,
         inputs=[version_dd],
         outputs=[agents_box, prompts_box, status_md],
     )
