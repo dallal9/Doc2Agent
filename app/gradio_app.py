@@ -17,7 +17,6 @@ from app.dashboard_tab import (
 from app.datasets_tab import build_datasets_tab
 from app.datasets_tab import on_tab_load as on_datasets_tab_load
 from app.documents_tab import build_documents_tab, on_documents_tab_load
-from app.pdf_ingest import ingest_upload_pdf_stream
 from app.evaluation_tab import (
     build_execution_run_tab,
     build_judge_run_tab,
@@ -26,6 +25,7 @@ from app.evaluation_tab import (
     on_metrics_tab_load,
 )
 from app.evaluation_tab import on_tab_load as on_evaluation_tab_load
+from app.pdf_ingest import ingest_upload_pdf_stream
 from app.system_tab import build_system_tab
 from app.utils import ChatResult, render_chat_with_cache
 from src.agents import run_agent
@@ -729,7 +729,9 @@ def create_app() -> gr.Blocks:
         metrics_assistant_state = gr.State(value=None)
         with gr.Tabs():
             with gr.Tab("Metrics"):
-                metric_dd, metrics_table, metrics_status = build_metrics_tab(metrics_assistant_state)
+                metric_dd, metrics_table, metrics_status = build_metrics_tab(
+                    metrics_assistant_state
+                )
 
         metrics_page.load(
             fn=on_metrics_tab_load,
