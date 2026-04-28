@@ -29,6 +29,7 @@ CREATE TABLE IF NOT EXISTS documents (
     subject TEXT,
     file_mod_time REAL,
     file_hash TEXT,
+    ingestion_config_json TEXT,
     ingestion_ts TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -297,6 +298,8 @@ class SQLiteStore:
             self.conn.execute("ALTER TABLE documents ADD COLUMN file_mod_time REAL")
         if "file_hash" not in columns:
             self.conn.execute("ALTER TABLE documents ADD COLUMN file_hash TEXT")
+        if "ingestion_config_json" not in columns:
+            self.conn.execute("ALTER TABLE documents ADD COLUMN ingestion_config_json TEXT")
 
         cur = self.conn.execute("PRAGMA table_info(evaluation_runs)")
         eval_cols = {row[1] for row in cur.fetchall()}
@@ -428,8 +431,8 @@ class SQLiteStore:
         m = doc.metadata
         cur.execute(
             """INSERT OR REPLACE INTO documents
-               (doc_id, file_path, file_name, file_size_bytes, page_count, title, author, subject, file_mod_time, file_hash)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               (doc_id, file_path, file_name, file_size_bytes, page_count, title, author, subject, file_mod_time, file_hash, ingestion_config_json)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 m.doc_id,
                 m.file_path,
@@ -441,6 +444,7 @@ class SQLiteStore:
                 m.subject,
                 m.file_mod_time,
                 m.file_hash,
+                json.dumps(m.ingestion_config) if m.ingestion_config else None,
             ),
         )
         # Explicit delete+insert (rather than INSERT OR REPLACE) so the
@@ -481,6 +485,12 @@ class SQLiteStore:
         return self._row_to_metadata(row) if row else None
 
     def _row_to_metadata(self, row: sqlite3.Row) -> DocumentMetadata:
+        cols = row.keys()
+        ing_raw = row["ingestion_config_json"] if "ingestion_config_json" in cols else None
+        try:
+            ingestion_config = json.loads(ing_raw) if ing_raw else None
+        except json.JSONDecodeError:
+            ingestion_config = None
         return DocumentMetadata(
             doc_id=row["doc_id"],
             file_path=row["file_path"],
@@ -492,6 +502,7 @@ class SQLiteStore:
             subject=row["subject"],
             file_mod_time=row["file_mod_time"],
             file_hash=row["file_hash"],
+            ingestion_config=ingestion_config,
         )
 
     def _row_to_page(self, row: sqlite3.Row) -> PageSchema:
@@ -959,7 +970,8 @@ class SQLiteStore:
             """
             SELECT a.annotation_id, a.set_id, a.question, a.answer, a.created_at,
                    s.doc_id, s.label AS set_label,
-                   d.file_name AS doc_name
+                   d.file_name AS doc_name,
+                   d.ingestion_config_json AS doc_ingestion_config_json
             FROM dataset_annotations da
             JOIN annotations a ON a.annotation_id = da.annotation_id
             JOIN annotation_sets s ON s.set_id = a.set_id
@@ -972,6 +984,11 @@ class SQLiteStore:
         result = []
         for row in rows:
             r = dict(row)
+            ing_raw = r.pop("doc_ingestion_config_json", None)
+            try:
+                r["doc_ingestion_config"] = json.loads(ing_raw) if ing_raw else None
+            except json.JSONDecodeError:
+                r["doc_ingestion_config"] = None
             span_rows = self.conn.execute(
                 "SELECT span_id, kind, page_num, quoted_text FROM annotation_spans WHERE annotation_id = ? ORDER BY page_num",
                 (r["annotation_id"],),

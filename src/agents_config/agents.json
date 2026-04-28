@@ -12,31 +12,31 @@
   },
   "agents": {
     "main": {
-      "model": "google/gemma-4-26b-a4b-it",
+      "model": "deepseek/deepseek-v3.2",
       "temperature": 0.2,
       "backend": "openrouter",
       "max_turns": 12
     },
     "reviewer": {
-      "model": "google/gemma-4-26b-a4b-it",
+      "model": "deepseek/deepseek-v3.2",
       "temperature": 0.1,
       "backend": "openrouter",
       "max_turns": 6
     },
     "validator": {
-      "model": "google/gemma-4-26b-a4b-it",
+      "model": "deepseek/deepseek-v3.2",
       "temperature": 0.1,
       "backend": "openrouter",
       "max_turns": 8
     },
     "ingestion": {
-      "model": "google/gemma-4-26b-a4b-it",
+      "model": "deepseek/deepseek-v3.2",
       "temperature": 0.0,
       "backend": "openrouter",
       "max_turns": 1
     },
     "judge": {
-      "model": "openai/gpt-4o-mini",
+      "model": "deepseek/deepseek-v3.2",
       "temperature": 0.0,
       "backend": "openrouter",
       "max_turns": 1

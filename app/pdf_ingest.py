@@ -15,6 +15,7 @@ async def ingest_upload_pdf_stream(
     *,
     use_enrichment: bool,
     show_ingestion_logs: bool,
+    set_active: bool = True,
 ) -> AsyncIterator[tuple[str, object]]:
     """Yield `("progress", current, total)` then `("done", result_str)` from ingest."""
     if show_ingestion_logs:
@@ -29,6 +30,7 @@ async def ingest_upload_pdf_stream(
                 enrich=use_enrichment,
                 on_progress=_on_progress,
                 original_filename=original_name,
+                set_active=set_active,
             )
         )
         while not ingest_task.done():
@@ -40,7 +42,11 @@ async def ingest_upload_pdf_stream(
         result = await ingest_task
     else:
         result = await assistant.ingest_pdf(
-            file_path, enrich=use_enrichment, original_filename=original_name
+            file_path,
+            enrich=use_enrichment,
+            original_filename=original_name,
+            set_active=set_active,
         )
-    assistant.sync_session_document()
+    if set_active:
+        assistant.sync_session_document()
     yield ("done", result)

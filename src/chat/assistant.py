@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import os
@@ -144,6 +145,7 @@ class ChatAssistant:
         enrich: bool = True,
         on_progress: ProgressCallback | None = None,
         original_filename: str | None = None,
+        set_active: bool = True,
     ) -> str:
         """Ingest PDF with cache-first logic, PyMuPDF parser, and optional LLM enrichment."""
         p = Path(file_path)
@@ -184,28 +186,42 @@ class ChatAssistant:
         doc.metadata.file_path = str(permanent_path)
         logger.info("Copied PDF to: %s", permanent_path)
 
+        ing_cfg = self.config.agents.get("ingestion")
+        doc.metadata.ingestion_config = {
+            "use_enrichment": bool(enrich),
+            "agent": ing_cfg.model_dump() if ing_cfg else None,
+            "prompt": self.prompts.ingestion if enrich else None,
+        }
+
         if enrich:
             ing_agent = create_ingestion_agent(self.config, self.prompts)
             total = len(doc.pages)
-            for i, page in enumerate(doc.pages, 1):
-                page_input = page.model_dump()
-                try:
-                    enriched = await ingest_page(ing_agent, page_input)
-                    # Merge enriched fields
-                    page.contains_names = enriched.contains_names
-                    page.contains_dates = enriched.contains_dates
-                    page.contains_locations = enriched.contains_locations
-                    page.contains_signatures = enriched.contains_signatures
-                    page.contains_personal_info = enriched.contains_personal_info
-                    page.headings = enriched.headings
-                    page.languages = enriched.languages
-                    page.keywords = enriched.keywords
-                except Exception as e:
-                    logger.warning("ingestion failed page=%d error=%s", page.page_num, e)
-                if on_progress:
-                    await on_progress(i, total)
+            concurrency = max(1, int(os.getenv("PAGE_INGESTION_CONCURRENCY", "1") or "1"))
+            sem = asyncio.Semaphore(concurrency)
+            counter = {"done": 0}
 
-        self._set_active_document(doc)
+            async def _enrich_one(page):
+                async with sem:
+                    try:
+                        enriched = await ingest_page(ing_agent, page.model_dump())
+                        page.contains_names = enriched.contains_names
+                        page.contains_dates = enriched.contains_dates
+                        page.contains_locations = enriched.contains_locations
+                        page.contains_signatures = enriched.contains_signatures
+                        page.contains_personal_info = enriched.contains_personal_info
+                        page.headings = enriched.headings
+                        page.languages = enriched.languages
+                        page.keywords = enriched.keywords
+                    except Exception as e:
+                        logger.warning("ingestion failed page=%d error=%s", page.page_num, e)
+                counter["done"] += 1
+                if on_progress:
+                    await on_progress(counter["done"], total)
+
+            await asyncio.gather(*[_enrich_one(p) for p in doc.pages])
+
+        if set_active:
+            self._set_active_document(doc)
 
         # Always save to SQLite (unified cache)
         self.store.insert_document(doc)

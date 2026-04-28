@@ -16,7 +16,9 @@ from datetime import datetime
 import gradio as gr
 
 from app.ui_components import fmt_duration_ms, fmt_score, render_table
+from src.agents_config import load_agents_config, load_personal_info, load_prompts_config
 from src.chat import ChatAssistant
+from src.config_versions import apply_versions, get_version, version_choices
 from src.evaluation import run_evaluation, run_llm_judge
 from src.evaluation.runner import normalize_config
 from src.logging import setup_logging
@@ -151,6 +153,11 @@ def _run_summary(assistant: ChatAssistant | None, run_id: str | None) -> str:
     cfg_line = ""
     if cfg:
         cfg_line = "**Config:** " + ", ".join(f"{k}={v}" for k, v in cfg.items())
+    version_line = ""
+    av = cfg.get("agent_version_id") if isinstance(cfg, dict) else None
+    gv = cfg.get("general_version_id") if isinstance(cfg, dict) else None
+    if av or gv:
+        version_line = f"**Pinned versions:** agent=`{av or '—'}` · general=`{gv or '—'}`"
     timing = assistant.store.get_run_timing(run_id)
     if timing["count"]:
         timing_line = (
@@ -166,11 +173,21 @@ def _run_summary(assistant: ChatAssistant | None, run_id: str | None) -> str:
         f"**Predictions:** {len(preds)} — success: {ok} · failed: {failed} · skipped: {skipped}",
         timing_line,
         cfg_line,
+        version_line,
     ]
     return "\n\n".join(l for l in lines if l)
 
 
 # ---- handlers -------------------------------------------------------------
+
+
+def _reload_assistant_config(assistant: ChatAssistant) -> None:
+    """Re-read agent / prompt / env-driven settings from current env."""
+    assistant.config = load_agents_config()
+    assistant.prompts = load_prompts_config()
+    assistant.personal_info = load_personal_info()
+    assistant.inline_doc_max_chars = int(os.getenv("INLINE_DOC_MAX_CHARS", "20000"))
+    assistant._init_agents()
 
 
 def on_tab_load(assistant):
@@ -182,6 +199,8 @@ def on_tab_load(assistant):
         gr.update(choices=_run_choices(assistant), value=None),
         "",
         "_Select a run to see its summary._",
+        gr.update(choices=version_choices("agent"), value=None),
+        gr.update(choices=version_choices("general"), value=None),
     )
 
 
@@ -192,6 +211,8 @@ def on_refresh(assistant):
         assistant,
         gr.update(choices=_dataset_choices(assistant)),
         gr.update(choices=_run_choices(assistant)),
+        gr.update(choices=version_choices("agent")),
+        gr.update(choices=version_choices("general")),
     )
 
 
@@ -234,6 +255,8 @@ async def on_start_run(
     seed,
     context_mode,
     extra_json,
+    agent_version_id,
+    general_version_id,
     assistant,
 ):
     if assistant is None:
@@ -262,6 +285,11 @@ async def on_start_run(
     label = (run_label or "").strip() or None
     desc = (run_desc or "").strip() or None
 
+    agent_version_id = (agent_version_id or "").strip() or None
+    general_version_id = (general_version_id or "").strip() or None
+    config["agent_version_id"] = agent_version_id
+    config["general_version_id"] = general_version_id
+
     run_id = assistant.store.create_evaluation_run(
         dataset_id=dataset_id,
         name=name,
@@ -269,12 +297,40 @@ async def on_start_run(
         description=desc,
         agent_config=config,
     )
-    logger.info("Started evaluation run=%s dataset=%s config=%s", run_id, dataset_id, config)
+    logger.info(
+        "Started evaluation run=%s dataset=%s config=%s agent_version=%s general_version=%s",
+        run_id,
+        dataset_id,
+        config,
+        agent_version_id,
+        general_version_id,
+    )
 
     try:
-        summary = await run_evaluation(assistant=assistant, run_id=run_id, config=config)
+        with apply_versions(
+            agent_version_id=agent_version_id,
+            general_version_id=general_version_id,
+        ):
+            if agent_version_id or general_version_id:
+                _reload_assistant_config(assistant)
+            try:
+                summary = await run_evaluation(assistant=assistant, run_id=run_id, config=config)
+            finally:
+                if agent_version_id or general_version_id:
+                    # Restore live config inside the apply_versions ctx so the
+                    # finally-block (env restore) leaves us in a clean state.
+                    pass
+        # After env restore, reload again so the assistant matches live env.
+        if agent_version_id or general_version_id:
+            _reload_assistant_config(assistant)
+        version_msg = ""
+        if agent_version_id or general_version_id:
+            version_msg = (
+                f" [agent_version={agent_version_id or '—'}, "
+                f"general_version={general_version_id or '—'}]"
+            )
         status_msg = (
-            f"Run **{name}** {summary['status']}. "
+            f"Run **{name}** {summary['status']}.{version_msg} "
             f"success: {summary['success']} · failed: {summary['failed']} · "
             f"skipped: {summary['skipped']} / {summary['total']} "
             f"(concurrency={config['concurrency']}, max_samples={config['max_samples']}, "
@@ -368,6 +424,25 @@ def build_execution_run_tab(assistant_state: gr.State):
                     value="",
                     lines=4,
                 )
+            with gr.Accordion("Pinned config versions (optional)", open=False):
+                gr.Markdown(
+                    "Pin a snapshot from **Config → Agent Config / System** so this "
+                    "run is reproducible. Leave empty to use whatever is currently live."
+                )
+                agent_version_dd = gr.Dropdown(
+                    label="Agent config version",
+                    choices=version_choices("agent"),
+                    value=None,
+                    interactive=True,
+                    allow_custom_value=False,
+                )
+                general_version_dd = gr.Dropdown(
+                    label="General config version",
+                    choices=version_choices("general"),
+                    value=None,
+                    interactive=True,
+                    allow_custom_value=False,
+                )
             start_btn = gr.Button("Start evaluation", variant="primary")
             status_md = gr.Markdown("")
 
@@ -387,7 +462,13 @@ def build_execution_run_tab(assistant_state: gr.State):
     refresh_btn.click(
         fn=on_refresh,
         inputs=[assistant_state],
-        outputs=[assistant_state, dataset_dropdown, run_dropdown],
+        outputs=[
+            assistant_state,
+            dataset_dropdown,
+            run_dropdown,
+            agent_version_dd,
+            general_version_dd,
+        ],
     )
     start_btn.click(
         fn=on_start_run,
@@ -402,6 +483,8 @@ def build_execution_run_tab(assistant_state: gr.State):
             seed_in,
             context_mode_in,
             extra_json_in,
+            agent_version_dd,
+            general_version_dd,
             assistant_state,
         ],
         outputs=[
@@ -434,7 +517,14 @@ def build_execution_run_tab(assistant_state: gr.State):
         outputs=[assistant_state, run_dropdown, status_md, results_tbl, summary_md],
     )
 
-    return dataset_dropdown, run_dropdown, results_tbl, summary_md
+    return (
+        dataset_dropdown,
+        run_dropdown,
+        results_tbl,
+        summary_md,
+        agent_version_dd,
+        general_version_dd,
+    )
 
 
 # =========================================================================
@@ -942,10 +1032,20 @@ def on_create_judge_run(
     except (TypeError, ValueError):
         concurrency_int = 1
 
+    # Inherit pinned versions from the parent evaluation run so the judge run
+    # is documented and reproducible alongside the predictions it scores.
+    eval_run = assistant.store.get_evaluation_run(eval_run_id) or {}
+    eval_cfg_raw = eval_run.get("agent_config_json") or "{}"
+    try:
+        eval_cfg = json.loads(eval_cfg_raw)
+    except json.JSONDecodeError:
+        eval_cfg = {}
     snapshot = {
         "model": model,
         "backend": backend,
         "concurrency": concurrency_int,
+        "agent_version_id": eval_cfg.get("agent_version_id"),
+        "general_version_id": eval_cfg.get("general_version_id"),
     }
     jr_id = assistant.store.create_judge_run(
         evaluation_run_id=eval_run_id,
@@ -1114,16 +1214,27 @@ async def on_run_llm_judge(judge_run_id, assistant):
     if not judge_run_id:
         return assistant, "Select a judge run.", gr.update(), gr.update()
     snap = (assistant.store.get_judge_run(judge_run_id) or {}).get("judge_config_snapshot") or {}
+    agent_v = snap.get("agent_version_id")
+    general_v = snap.get("general_version_id")
     try:
-        summary = await run_llm_judge(
-            assistant=assistant,
-            judge_run_id=judge_run_id,
-            model_override=snap.get("model") or None,
-            backend_override=snap.get("backend") or None,
-            concurrency=snap.get("concurrency"),
-        )
+        with apply_versions(agent_version_id=agent_v, general_version_id=general_v):
+            if agent_v or general_v:
+                _reload_assistant_config(assistant)
+            summary = await run_llm_judge(
+                assistant=assistant,
+                judge_run_id=judge_run_id,
+                model_override=snap.get("model") or None,
+                backend_override=snap.get("backend") or None,
+                concurrency=snap.get("concurrency"),
+            )
+        if agent_v or general_v:
+            _reload_assistant_config(assistant)
+        version_msg = ""
+        if agent_v or general_v:
+            version_msg = f" [agent_version={agent_v or '—'}, general_version={general_v or '—'}]"
         msg = (
-            f"LLM judge {summary['status']} — success: {summary.get('success', 0)} · "
+            f"LLM judge {summary['status']}.{version_msg} "
+            f"success: {summary.get('success', 0)} · "
             f"failed: {summary.get('failed', 0)} / {summary.get('total', 0)}"
         )
     except Exception as e:

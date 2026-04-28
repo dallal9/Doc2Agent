@@ -8,6 +8,7 @@ from src.bootstrap import init_app
 init_app()
 
 from app.adhoc_tab import build_switch_file_tab, on_adhoc_tab_load
+from app.agent_config_tab import build_agent_config_tab
 from app.annotation_tab import annotator_head_script, build_annotation_tab, on_tab_load
 from app.dashboard_tab import (
     build_data_dashboard_tab,
@@ -658,9 +659,14 @@ def create_app() -> gr.Blocks:
         ev_assistant_state = gr.State(value=None)
         with gr.Tabs():
             with gr.Tab("Execution Run"):
-                ev_dataset_dd, ev_run_dd, ev_results_tbl, ev_summary_md = build_execution_run_tab(
-                    ev_assistant_state
-                )
+                (
+                    ev_dataset_dd,
+                    ev_run_dd,
+                    ev_results_tbl,
+                    ev_summary_md,
+                    ev_agent_ver_dd,
+                    ev_general_ver_dd,
+                ) = build_execution_run_tab(ev_assistant_state)
             with gr.Tab("Judge Run"):
                 judge_eval_dd, judge_metrics_multi, judge_run_dd, judge_aggregates = (
                     build_judge_run_tab(ev_assistant_state)
@@ -675,6 +681,8 @@ def create_app() -> gr.Blocks:
                 ev_run_dd,
                 ev_results_tbl,
                 ev_summary_md,
+                ev_agent_ver_dd,
+                ev_general_ver_dd,
             ],
         ).then(
             fn=on_judge_tab_load,
@@ -745,6 +753,8 @@ def create_app() -> gr.Blocks:
         with gr.Tabs():
             with gr.Tab("System"):
                 build_system_tab(cfg_assistant_state)
+            with gr.Tab("Agent Config"):
+                build_agent_config_tab()
 
     # Ad-hoc page — quick experimental utilities (no validation)
     with demo.route("Ad-hoc") as adhoc_page:

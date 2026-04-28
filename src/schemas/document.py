@@ -44,6 +44,7 @@ class DocumentMetadata(BaseModel):
     subject: str | None = None
     file_mod_time: float | None = None  # Unix timestamp for cache invalidation
     file_hash: str | None = None  # MD5 hash of file content
+    ingestion_config: dict | None = None  # ingestion agent + USE_ENRICHMENT snapshot
 
 
 class Heading(BaseModel):

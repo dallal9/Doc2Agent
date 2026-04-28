@@ -182,6 +182,22 @@ ENV_VARS: list[EnvVar] = [
     ),
     # Caching
     EnvVar(
+        "PAGE_INGESTION_CONCURRENCY",
+        "int",
+        "1",
+        "Query",
+        "Pages enriched in parallel within a single document. 1 for local Ollama, 4–8 for OpenRouter.",
+        "live",
+    ),
+    EnvVar(
+        "DOC_INGESTION_CONCURRENCY",
+        "int",
+        "1",
+        "Query",
+        "Documents ingested in parallel for bulk uploads. Multiplies with PAGE_INGESTION_CONCURRENCY for total in-flight enrichment calls.",
+        "live",
+    ),
+    EnvVar(
         "QUERY_CACHE_ENABLED",
         "bool",
         "true",
