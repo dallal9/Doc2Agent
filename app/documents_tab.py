@@ -152,6 +152,7 @@ async def on_documents_upload(file_paths, assistant: ChatAssistant | None):
             assistant,
             "No file uploaded.",
             gr.update(),
+            gr.update(),
             _pdf_iframe(None),
             _format_metadata(None, None),
             "",
@@ -199,6 +200,7 @@ async def on_documents_upload(file_paths, assistant: ChatAssistant | None):
         assistant,
         f"Ingesting {total} file(s) (up to {file_concurrency} in parallel)...",
         gr.update(),
+        gr.update(),
         _pdf_iframe(None),
         _format_metadata(None, None),
         "",
@@ -209,10 +211,12 @@ async def on_documents_upload(file_paths, assistant: ChatAssistant | None):
     for coro in asyncio.as_completed(tasks):
         name, result = await coro
         summaries.append(f"- **{name}**: {result}")
+        live_choices = _doc_choices(assistant)
         yield (
             assistant,
             f"Ingested {counter['done']}/{total} file(s)...",
-            gr.update(choices=_doc_choices(assistant)),
+            gr.update(choices=live_choices),
+            gr.update(choices=live_choices),
             _pdf_iframe(None),
             _format_metadata(None, None),
             "",
@@ -225,6 +229,7 @@ async def on_documents_upload(file_paths, assistant: ChatAssistant | None):
         assistant,
         summary_md,
         gr.update(choices=choices, value=last_doc_id),
+        gr.update(choices=choices, value=[]),
         pdf_html,
         meta_md,
         enrich_md,
@@ -236,6 +241,7 @@ def on_documents_delete(doc_id: str | None, assistant: ChatAssistant | None):
         return (
             assistant,
             "No document selected.",
+            gr.update(),
             gr.update(),
             _pdf_iframe(None),
             _format_metadata(None, None),
@@ -249,6 +255,37 @@ def on_documents_delete(doc_id: str | None, assistant: ChatAssistant | None):
         assistant,
         f"Deleted **{fname}**. {result_msg}",
         gr.update(choices=choices, value=None),
+        gr.update(choices=choices, value=[]),
+        _pdf_iframe(None),
+        _format_metadata(None, None),
+        "",
+    )
+
+
+def on_documents_bulk_delete(doc_ids: list[str] | None, assistant: ChatAssistant | None):
+    if assistant is None or not doc_ids:
+        return (
+            assistant,
+            "No documents selected.",
+            gr.update(),
+            gr.update(value=[]),
+            _pdf_iframe(None),
+            _format_metadata(None, None),
+            "",
+        )
+    deleted: list[str] = []
+    for doc_id in doc_ids:
+        meta = assistant.store.get_document_metadata(doc_id)
+        fname = meta.file_name if meta else doc_id
+        assistant.delete_cached_document(doc_id)
+        deleted.append(fname)
+    choices = _doc_choices(assistant)
+    summary = f"Deleted {len(deleted)} document(s): " + ", ".join(f"**{n}**" for n in deleted)
+    return (
+        assistant,
+        summary,
+        gr.update(choices=choices, value=None),
+        gr.update(choices=choices, value=[]),
         _pdf_iframe(None),
         _format_metadata(None, None),
         "",
@@ -257,7 +294,7 @@ def on_documents_delete(doc_id: str | None, assistant: ChatAssistant | None):
 
 def on_documents_flush_doc(doc_id: str | None, assistant: ChatAssistant | None):
     if assistant is None or not doc_id:
-        return assistant, "No document selected.", gr.update()
+        return assistant, "No document selected.", gr.update(), gr.update()
     count = assistant.store.flush_query_cache(doc_id)
     meta = assistant.store.get_document_metadata(doc_id)
     fname = meta.file_name if meta else doc_id
@@ -266,17 +303,19 @@ def on_documents_flush_doc(doc_id: str | None, assistant: ChatAssistant | None):
         assistant,
         f"Flushed {count} cached queries for **{fname}**.",
         gr.update(choices=choices, value=doc_id),
+        gr.update(choices=choices),
     )
 
 
 def on_documents_flush_all(assistant: ChatAssistant | None):
     if assistant is None:
-        return assistant, "", gr.update()
+        return assistant, "", gr.update(), gr.update()
     count = assistant.store.flush_query_cache(None)
     choices = _doc_choices(assistant)
     return (
         assistant,
         f"Flushed {count} cached queries (all documents).",
+        gr.update(choices=choices),
         gr.update(choices=choices),
     )
 
@@ -302,7 +341,12 @@ def on_documents_export_json(doc_id: str | None, assistant: ChatAssistant | None
 async def on_documents_tab_load(assistant: ChatAssistant | None):
     if assistant is None:
         assistant = ChatAssistant()
-    return assistant, gr.update(choices=_doc_choices(assistant), value=None)
+    choices = _doc_choices(assistant)
+    return (
+        assistant,
+        gr.update(choices=choices, value=None),
+        gr.update(choices=choices, value=[]),
+    )
 
 
 def build_documents_tab(assistant_state: gr.State):
@@ -327,6 +371,14 @@ def build_documents_tab(assistant_state: gr.State):
                 flush_all_btn = gr.Button(
                     "Clear Cached Replies (All Docs)", variant="stop", size="sm"
                 )
+            with gr.Accordion("Bulk delete", open=False):
+                bulk_dd = gr.Dropdown(
+                    label="Select documents to delete",
+                    choices=[],
+                    multiselect=True,
+                    interactive=True,
+                )
+                bulk_delete_btn = gr.Button("Delete Selected", variant="stop", size="sm")
             metadata_md = gr.Markdown("_Select a document._")
         with gr.Column(scale=2):
             pdf_html = gr.HTML(_pdf_iframe(None))
@@ -345,6 +397,7 @@ def build_documents_tab(assistant_state: gr.State):
             assistant_state,
             ops_status_md,
             doc_dd,
+            bulk_dd,
             pdf_html,
             metadata_md,
             enrichment_md,
@@ -358,6 +411,21 @@ def build_documents_tab(assistant_state: gr.State):
             assistant_state,
             ops_status_md,
             doc_dd,
+            bulk_dd,
+            pdf_html,
+            metadata_md,
+            enrichment_md,
+        ],
+    )
+
+    bulk_delete_btn.click(
+        fn=on_documents_bulk_delete,
+        inputs=[bulk_dd, assistant_state],
+        outputs=[
+            assistant_state,
+            ops_status_md,
+            doc_dd,
+            bulk_dd,
             pdf_html,
             metadata_md,
             enrichment_md,
@@ -373,13 +441,13 @@ def build_documents_tab(assistant_state: gr.State):
     flush_btn.click(
         fn=on_documents_flush_doc,
         inputs=[doc_dd, assistant_state],
-        outputs=[assistant_state, ops_status_md, doc_dd],
+        outputs=[assistant_state, ops_status_md, doc_dd, bulk_dd],
     )
 
     flush_all_btn.click(
         fn=on_documents_flush_all,
         inputs=[assistant_state],
-        outputs=[assistant_state, ops_status_md, doc_dd],
+        outputs=[assistant_state, ops_status_md, doc_dd, bulk_dd],
     )
 
-    return doc_dd, metadata_md, pdf_html, enrichment_md
+    return doc_dd, bulk_dd, metadata_md, pdf_html, enrichment_md

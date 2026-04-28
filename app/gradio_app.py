@@ -608,13 +608,17 @@ def create_app() -> gr.Blocks:
         docs_assistant_state = gr.State(value=None)
         with gr.Tabs():
             with gr.Tab("Browse Documents"):
-                docs_dd, docs_meta_md, docs_pdf_html, docs_enrichment_md = build_documents_tab(
-                    docs_assistant_state
-                )
+                (
+                    docs_dd,
+                    docs_bulk_dd,
+                    docs_meta_md,
+                    docs_pdf_html,
+                    docs_enrichment_md,
+                ) = build_documents_tab(docs_assistant_state)
         documents_page.load(
             fn=on_documents_tab_load,
             inputs=[docs_assistant_state],
-            outputs=[docs_assistant_state, docs_dd],
+            outputs=[docs_assistant_state, docs_dd, docs_bulk_dd],
         )
 
     # Datasets page — two tabs sharing one assistant_state
