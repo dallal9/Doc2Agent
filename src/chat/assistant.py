@@ -190,7 +190,6 @@ class ChatAssistant:
         doc.metadata.ingestion_config = {
             "use_enrichment": bool(enrich),
             "agent": ing_cfg.model_dump() if ing_cfg else None,
-            "prompt": self.prompts.ingestion if enrich else None,
         }
 
         if enrich:

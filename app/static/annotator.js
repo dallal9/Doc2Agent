@@ -141,20 +141,64 @@
     return null;
   }
 
+  function inTextLayer(node) {
+    let p = node && (node.nodeType === 1 ? node : node.parentElement);
+    while (p) {
+      if (p.classList && p.classList.contains("textLayer")) return true;
+      p = p.parentElement;
+    }
+    return false;
+  }
+
+  // Walk only text nodes that live in a PDF.js textLayer and that the range
+  // actually intersects, slicing the start/end nodes at their offsets. This
+  // avoids range.toString() pulling in DOM-order siblings that the user did
+  // not visually highlight (a common over-selection issue with PDF.js text
+  // layers, especially across columns or pages).
+  function collectRangeText(range) {
+    const piecesByPage = new Map();
+    const root = range.commonAncestorContainer;
+    const rootEl = root.nodeType === 1 ? root : root.parentNode;
+    if (!rootEl) return piecesByPage;
+
+    const walker = document.createTreeWalker(rootEl, NodeFilter.SHOW_TEXT, {
+      acceptNode(node) {
+        if (!inTextLayer(node)) return NodeFilter.FILTER_REJECT;
+        if (!range.intersectsNode(node)) return NodeFilter.FILTER_REJECT;
+        return NodeFilter.FILTER_ACCEPT;
+      },
+    });
+
+    let node;
+    while ((node = walker.nextNode())) {
+      const pageNum = pageNumFromNode(node);
+      if (pageNum == null) continue;
+      let text = node.nodeValue || "";
+      if (node === range.startContainer && node === range.endContainer) {
+        text = text.slice(range.startOffset, range.endOffset);
+      } else if (node === range.startContainer) {
+        text = text.slice(range.startOffset);
+      } else if (node === range.endContainer) {
+        text = text.slice(0, range.endOffset);
+      }
+      if (!text) continue;
+      if (!piecesByPage.has(pageNum)) piecesByPage.set(pageNum, []);
+      piecesByPage.get(pageNum).push(text);
+    }
+    return piecesByPage;
+  }
+
   function getSelectionSpans() {
     const sel = window.getSelection();
     if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return [];
     const byPage = new Map();
     for (let i = 0; i < sel.rangeCount; i++) {
       const range = sel.getRangeAt(i);
-      const start = pageNumFromNode(range.startContainer);
-      const end = pageNumFromNode(range.endContainer);
-      if (start == null) continue;
-      const text = range.toString().trim();
-      if (!text) continue;
-      const pages = start === end ? [start] : [start, end];
-      for (const p of pages) {
-        if (!byPage.has(p)) byPage.set(p, text);
+      const piecesByPage = collectRangeText(range);
+      for (const [pageNum, pieces] of piecesByPage) {
+        const text = pieces.join(" ").replace(/\s+/g, " ").trim();
+        if (!text) continue;
+        if (!byPage.has(pageNum)) byPage.set(pageNum, text);
       }
     }
     return Array.from(byPage.entries()).map(([page_num, quoted_text]) => ({
@@ -249,6 +293,54 @@
       const inp = document.getElementById("d2a-page-input");
       addPageSpan(inp && inp.value);
     } else if (action === "clear") clearStaged();
+  });
+
+  // Keyboard caret-extension inside the PDF viewer. Browsers don't move the
+  // caret with arrow keys on non-editable text outside caret-browsing mode,
+  // so we drive Selection.modify() manually. Click first to place a caret,
+  // then:
+  //   Shift + ← / →      extend by character
+  //   Shift + Ctrl/Alt + ← / →   extend by word
+  //   Shift + ↑ / ↓      extend by line
+  //   ← / →   (no shift) move caret by character
+  function selectionInsideViewer() {
+    const sel = window.getSelection();
+    if (!sel || sel.rangeCount === 0) return null;
+    const anchor = sel.anchorNode;
+    const focus = sel.focusNode;
+    const viewer = getViewer();
+    if (!viewer) return null;
+    if (!anchor || !focus) return null;
+    if (!viewer.contains(anchor) || !viewer.contains(focus)) return null;
+    if (!inTextLayer(anchor) || !inTextLayer(focus)) return null;
+    return sel;
+  }
+
+  document.addEventListener("keydown", (ev) => {
+    if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(ev.key)) return;
+    const sel = selectionInsideViewer();
+    if (!sel) return;
+    if (typeof sel.modify !== "function") return;
+
+    const dir =
+      ev.key === "ArrowLeft" || ev.key === "ArrowUp" ? "backward" : "forward";
+    const vertical = ev.key === "ArrowUp" || ev.key === "ArrowDown";
+    let granularity = "character";
+    if (vertical) granularity = "line";
+    else if (ev.ctrlKey || ev.altKey || ev.metaKey) granularity = "word";
+
+    const alter = ev.shiftKey ? "extend" : "move";
+
+    // Normalise so the focus is always at the end of the selection. This
+    // makes Shift+← always shrink the right edge (instead of extending past
+    // the original anchor when the user dragged right-to-left).
+    if (alter === "extend" && !sel.isCollapsed) {
+      const r = sel.getRangeAt(0);
+      sel.setBaseAndExtent(r.startContainer, r.startOffset, r.endContainer, r.endOffset);
+    }
+
+    sel.modify(alter, dir, granularity);
+    ev.preventDefault();
   });
 
   // Initial render of staged list once DOM is ready.
