@@ -31,7 +31,6 @@ def configure_logging(*, log_file: str | None = None) -> None:
     if file_path is None and _is_enabled(os.getenv("LOG_TO_FILE"), "true"):
         Path("logs").mkdir(exist_ok=True)
         file_path = f"logs/{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
-        os.environ.setdefault("LOG_FILE", file_path)
 
     if file_path:
         Path(file_path).parent.mkdir(parents=True, exist_ok=True)
