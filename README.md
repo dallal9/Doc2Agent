@@ -5,135 +5,59 @@
 ![Python](https://img.shields.io/badge/python-3.10+-blue.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 
-**Intelligent PDF Assistant with Multi-Agent Architecture**
-
-Doc2Agent is a document Q&A system that combines local LLM inference with a multi-agent architecture. Upload PDFs, ask questions, and get answers powered by local models running on your machine.
+A multi-agent PDF assistant with a built-in evaluation harness. Chat with documents, build evaluation datasets from real conversations or manual annotations, and score agent answers with a manual or LLM-as-judge workflow — all locally, with Ollama or OpenRouter as the backend.
 
 ---
 
-## Overview
+## Highlights
 
-Doc2Agent transforms static PDF documents into interactive knowledge bases. Using a multi-agent system with specialized roles, it provides accurate, context-aware answers to your questions while maintaining complete privacy through local inference.
-
-**Key Capabilities:**
-- Intelligent PDF parsing and semantic enrichment
-- Multi-agent collaboration for quality assurance
-- Local-first architecture with Ollama integration
-- Full-text search with SQLite FTS5
-- Query caching for improved performance
-- Personal information validation
-- Configurable logging (file by default + optional terminal stream)
-- File-based configuration (agents/models/backends and prompts)
-- **Multi-page UI** with a navbar:
-  - **Chat** — Q&A with the agents (with a one-click "clean empty sessions" button)
-  - **Datasets** — two tabs: *Live Chat Datasets* (turn chat sessions into eval sets) and *Annotate Documents* (PDF.js viewer + span staging + push annotation sets into a dataset)
-  - **Evaluation** — two tabs: *Execution Run* (run a dataset against the chat agent, one-turn per annotation, store predictions) and *Judge Run* (manual or LLM-as-judge scoring per metric, with aggregation)
-  - **Config** — *Metrics* tab (CRUD for reusable metrics: `bool | int | float`, aggregation, optional judge prompt, optional min/max range) and *System* tab (view/edit every supported `.env` variable, split into live-applicable settings vs ones that need a restart)
-  - **Dashboard** — two tabs: *Data* (documents, annotation sets, datasets) and *Evaluations* (runs, judge runs, per-judge-run pivot of metric scores, global metric rollup, failure inspection: failed predictions, low-score judgments, missing document references)
+- **Multi-agent pipeline** — a main agent backed by reviewer, validator, ingestion, and judge agents (pydantic-ai).
+- **Two interchangeable backends** — Ollama (local) and OpenRouter (cloud), selected per-agent in `agents.json`.
+- **PDF ingestion** — PyMuPDF parsing with optional LLM enrichment (headings, names, dates, keywords).
+- **SQLite + FTS5** — full-text search across every ingested page; query cache to skip repeated LLM calls.
+- **Annotation tool** — embedded PDF.js viewer with text/page span staging and Q&A capture.
+- **Evaluation harness** — replay datasets through the chat pipeline, score predictions manually or with an LLM judge, aggregate per metric.
+- **Versioned config UI** — edit `.env`, `agents.json`, and `prompts.json` from the browser; every save is snapshotted.
+- **Personal info validation** — optional validator agent checks document claims against a JSON profile.
 
 ---
 
-## Quick Start
+## Quick start
 
-### Prerequisites
+**Prerequisites:** Python 3.10+, [`uv`](https://github.com/astral-sh/uv), and at least one LLM backend.
 
-- Python 3.10 or higher
-- [Ollama](https://ollama.com/download) installed and running
-- `uv` package manager (or pip)
-
-### Installation
-
-1. **Install Ollama models:**
 ```bash
-ollama pull ministral-3:3b
-ollama pull deepseek-r1:8b
-```
-
-2. **Install dependencies:**
-```bash
+git clone <your-fork-or-repo>.git Doc2Agent
+cd Doc2Agent
 uv sync
-```
-
-3. **Configure environment:**
-```bash
 cp env.example .env
-```
-
-4. **Start the application:**
-```bash
 make run
 ```
 
-5. **Access the web UI** (typically `http://localhost:7860`). The home page shows a light/dark-aware logo and a short tagline; the navbar links to:
-   - **Chat** (`/chat`) — Q&A with the agents
-   - **Datasets** (`/datasets`) — build datasets from live chat sessions or from manually annotated documents
-   - **Evaluation** (`/evaluation`) — run datasets against the chat agent and score predictions
-   - **Config** (`/config`) — define reusable metrics
-   - **Dashboard** (`/dashboard`) — system overview, run history, metric rollups, failure inspection
+The app opens at `http://localhost:7860`.
 
----
+### Pick a backend
 
-## Features
+Doc2Agent ships with two backends defined in `src/agents_config/agents.json`. `default_backend` is `local`; each agent can override.
 
-### PDF Ingestion Pipeline
+**Option A — Ollama (local).** Pull the models you want and point each agent at them:
 
-- **PyMuPDF-based parsing**: Extracts text, tables, and images with high fidelity
-- **LLM enrichment**: Automatically identifies names, dates, headings, and keywords
-- **Smart caching**: Documents are cached based on modification time to avoid reprocessing
-- **Flexible storage**: Large documents stored in SQLite; optional JSON export for smaller files
+```bash
+ollama pull llama3.1:8b
+ollama pull deepseek-r1:8b
+```
 
-### Multi-Agent System
+Then in `agents.json`, set each agent's `"backend": "local"` and `"model"` to a tag you've pulled (or use `${DEFAULT_MID}` etc. and define those in `.env`).
 
-- **Main Agent**: Orchestrates queries and coordinates with specialized agents
-- **Reviewer Agent**: Reviews draft answers for quality and accuracy
-- **Validator Agent**: Validates claims against user-provided personal information
-- **Ingestion Agent**: Enriches document pages with semantic metadata
+**Option B — OpenRouter (cloud).** Add your key to `.env`:
 
-### Storage & Retrieval
+```bash
+OPENROUTER_API_KEY=sk-or-...
+```
 
-- **SQLite with FTS5**: Full-text search across all ingested documents
-- **Query caching**: Intelligent caching system reduces redundant LLM calls
-- **Document management**: Load, select, and manage multiple documents from the UI
-- **Annotations**: Same SQLite DB as chat; separate tables for sets, Q&A rows, and spans
-- **Cache management**: Built-in cache flushing and automatic cleanup
+Then set each agent's `"backend": "openrouter"` and pick a model slug (e.g. `anthropic/claude-sonnet-4.6`, `deepseek/deepseek-v3.2`).
 
-### Evaluation & Judging
-
-- **Execution Run**: pick a dataset, name the run, optionally override agent/backend config; the runner replays each annotation as a one-turn query against the existing chat pipeline and stores one `EvaluationPrediction` per annotation (agent answer, thoughts, document reference, status, error).
-- **Metrics**: define reusable `Metric`s (`bool | int | float`, aggregation `avg | sum | min | max`, optional `judge_prompt`, optional min/max range).
-- **Judge Run**: pick an evaluation run + metrics, then either score predictions manually (per-prediction navigation, score + comment per metric) or run an LLM-as-judge that returns `{score, reason}` per prediction × metric. Aggregates roll up per metric using its declared aggregation.
-- **Reproducibility**: each `EvaluationRun` persists the agent config snapshot used.
-
-### User Interface
-
-- **Gradio multi-page app** with a navbar:
-  - **Chat** page: upload, agents, cache, sessions. Includes **Clean Empty Sessions (Except Current)** to prune empty sessions in one click.
-  - **Datasets** page:
-    - *Live Chat Datasets* tab: pick a chat session, choose Auto/Manual, export turns as `Annotation`s into a `Dataset`. One dataset can aggregate multiple sessions.
-    - *Annotate Documents* tab: PDF.js viewer + span staging (text / page-based), Q&A capture, JSON export. Push the whole annotation set into an existing or new dataset — stored the same way as chat-exported ones (annotations + spans + doc reference in SQLite).
-  - **Evaluation** page:
-    - *Execution Run* tab: dataset → run → predictions table.
-    - *Judge Run* tab: manual scoring UI with per-prediction navigation, plus LLM-as-judge mode.
-  - **Config** page:
-    - *Metrics* tab: create/edit/delete metric definitions.
-  - **Dashboard** page:
-    - *Data* tab: KPIs and tables for documents, annotation sets, datasets.
-    - *Evaluations* tab: KPIs, evaluation runs, judge runs, per-judge-run pivot, global metric rollup, and failure inspection (failed predictions, low-score judgments, predictions missing document references).
-- **Document upload**: PDF upload with progress tracking (chat may enrich pages; Annotate parses only)
-- **Document selection**: Switch between multiple cached documents
-- **Query history**: View and manage cached queries per document
-- **Inline traces**: Live status updates while checking cache/running agent
-
-### Logging
-
-- Logs to file by default and prints the resolved log file path on startup.
-- Optional terminal streaming via `LOG_TO_STDOUT=true`.
-- Configurable via: `LOG_LEVEL`, `LOG_TO_FILE`, `LOG_FILE_PREFIX`, `LOG_TO_STDOUT`.
-
-### Configuration
-
-- Environment-driven: copy `env.example` → `.env`.
-- File-driven (editable JSON): `src/agents_config/agents.json`, `src/agents_config/prompts.json`.
+You can mix — e.g. ingestion on local Ollama, judge on OpenRouter — by setting `backend` per agent.
 
 ---
 
@@ -141,281 +65,282 @@ make run
 
 ```mermaid
 flowchart TB
-    subgraph UI[User Interface]
-        GR[Gradio — Chat / Datasets pages]
+    UI[Gradio UI<br/>Chat / Documents / Datasets / Evaluation / Dashboard / Config]
+
+    subgraph Ingestion[Ingestion]
+        PDF[PDF] --> Parser[PDFParser<br/>PyMuPDF]
+        Parser --> IngAgent[Ingestion Agent<br/>enrichment]
     end
 
-    subgraph Ingestion[PDF Ingestion Pipeline]
-        PDF[PDF File] --> Parser[PDFParser<br/>PyMuPDF]
-        Parser --> RawPages[Raw Pages<br/>text/tables/images]
-        RawPages --> IngAgent[Ingestion Agent<br/>LLM Enrichment]
-        IngAgent --> EnrichedPages[Enriched Pages<br/>names/dates/headings]
+    subgraph Storage[SQLite]
+        Pages[(documents / pages<br/>+ FTS5)]
+        Cache[(query_cache)]
+        EvalDB[(datasets / runs<br/>predictions / judgments)]
     end
 
-    subgraph Storage[Persistence Layer]
-        EnrichedPages --> SQLite[(SQLite DB<br/>FTS5 Search)]
-        EnrichedPages -.->|Optional| JSON[(JSON File)]
-    end
-
-    subgraph Agents[Multi-Agent System]
+    subgraph Agents[Agents]
         Main[Main Agent]
-        Reviewer[Reviewer Agent]
-        Validator[Validator Agent]
+        Reviewer[Reviewer]
+        Validator[Validator]
+        Judge[Judge]
         Main -->|review_draft| Reviewer
-        Main -->|validate_against_personal_info| Validator
+        Main -->|validate_personal_info| Validator
     end
 
-    subgraph LLM[LLM Backend]
-        Ollama[Ollama<br/>Local Inference]
-    end
+    Backends[Ollama / OpenRouter]
 
-    GR -->|upload PDF| Ingestion
-    GR -->|chat message| Main
-    Main -->|query_pages / search_fts| Storage
-    Main -->|generate| Ollama
-    Reviewer -->|generate| Ollama
-    Validator -->|generate| Ollama
-    IngAgent -->|generate| Ollama
-    Main -->|response| GR
+    UI -->|upload| Ingestion --> Pages
+    UI -->|chat| Main
+    Main --> Pages
+    Main <--> Cache
+    Main --> Backends
+    Reviewer --> Backends
+    Validator --> Backends
+    IngAgent --> Backends
+    UI -->|run dataset| EvalDB
+    EvalDB --> Judge --> Backends
 ```
 
-**Data Flow:**
-1. User uploads PDF → Ingestion pipeline parses and enriches pages
-2. Enriched pages stored in SQLite with full-text search capabilities
-3. User asks question → Main agent queries storage and generates response
-4. Reviewer agent validates answer quality
-5. Validator agent checks against personal info (if configured)
-6. Final answer returned to user interface
+**Flow.** PDF upload → PyMuPDF extracts pages → ingestion agent enriches each page → stored in SQLite with FTS5. A chat turn hits the query cache first; on miss, the main agent searches pages, drafts an answer, optionally calls reviewer/validator, and the result is cached. Evaluation runs replay dataset annotations one-turn-each through the same pipeline; the judge then scores predictions.
 
-For detailed architecture documentation, see [docs/architecture.md](docs/architecture.md).
+For deeper detail see [`docs/architecture.md`](docs/architecture.md).
+
+---
+
+## Agents
+
+Defined in `src/agents_config/agents.json`; prompts in `src/agents_config/prompts.json`.
+
+| Agent       | Role                                                              | Default model (shipped)        |
+|-------------|-------------------------------------------------------------------|--------------------------------|
+| `main`      | Orchestrates the chat turn; calls tools and other agents          | `anthropic/claude-sonnet-4.6`  |
+| `reviewer`  | Reviews the main agent's draft for accuracy                       | `deepseek/deepseek-v3.2`       |
+| `validator` | Checks claims against `PERSONAL_INFO_JSON` (opt-in)               | `deepseek/deepseek-v3.2`       |
+| `ingestion` | Adds headings, dates, keywords, etc. to each page during upload   | `deepseek/deepseek-v3.2`       |
+| `judge`     | Scores predictions per metric in LLM-as-judge mode                | `deepseek/deepseek-v3.2`       |
+
+`agents.openrouter.json` is a ready-made alternative profile (lighter models). Use `AGENTS_CONFIG_PATH` to point at it.
+
+---
+
+## Pages
+
+The Gradio app has a navbar with one route per page; some pages have inner tabs.
+
+- **Chat** — upload a PDF, ask questions, manage cached queries and chat sessions. Includes "Clean Empty Sessions (Except Current)".
+- **Documents** — browse cached PDFs with PDF preview and enrichment metadata; bulk-delete supported.
+- **Datasets**
+  - *Live Chat Datasets*: turn chat sessions into evaluation datasets (Auto = every turn, Manual = pick messages).
+  - *Annotate Documents*: PDF.js viewer with text/page span staging; capture Q&A and push the set into a dataset (new or existing).
+- **Evaluation**
+  - *Execution Run*: pick a dataset, optionally override agent config, replay each annotation as a one-turn query; per-prediction status, answer, thoughts, doc reference, and errors are stored.
+  - *Judge Run*: pick a run + metrics, score manually (per-prediction navigation) or run the LLM judge for `{score, reason}` per prediction × metric.
+- **Dashboard**
+  - *Data*: KPIs and tables for documents, annotation sets, datasets.
+  - *Evaluations*: KPIs, run/judge tables, per-judge-run × metric pivot, global metric rollup, and failure inspection (failed predictions, low-score judgments, missing doc references).
+- **Metrics** — CRUD for reusable scoring metrics (`bool | int | float`, aggregation `avg | sum | min | max`, optional min/max range, optional LLM judge prompt).
+- **Config**
+  - *System*: edit every supported `.env` variable from the browser. Live-applicable settings save instantly; restart-required ones use *Save & Restart*. Each save is versioned.
+  - *Agent Config*: edit `agents.json` and `prompts.json` with version snapshots, so evaluation runs can pin a specific config version.
+- **Ad-hoc** — experimental utilities (e.g. *Switch File ID* to repoint annotations at a different document).
+
+---
+
+## How-tos
+
+### Chat with a PDF
+
+1. Open **Chat**, upload a PDF in the sidebar, wait for ingestion.
+2. Ask a question. Cache hits return immediately; misses run the agent and are cached (up to `QUERY_CACHE_MAX_PER_FILE` per doc).
+3. Use the session dropdown to switch conversations; *Flush Cache* clears cached answers for the current document.
+
+### Build a dataset from a chat session
+
+1. **Datasets → Live Chat Datasets**.
+2. Create or pick a dataset, pick a chat session, choose **Auto** (every turn) or **Manual** (cherry-pick messages), click **Add to dataset**.
+3. The same dataset can aggregate turns from multiple sessions. Export as JSON from the preview pane.
+
+### Annotate a PDF and push it into a dataset
+
+1. **Datasets → Annotate Documents**.
+2. Pick or upload a PDF, create an **annotation set**.
+3. Stage spans (text selection or whole page), enter the Q&A, **Save**.
+4. In the same tab's sidebar, select an existing dataset and **Add set → dataset**, or create a new one with **Create & add set**.
+
+### Run an evaluation
+
+1. Define metrics in **Metrics** if you don't have any yet.
+2. **Evaluation → Execution Run**: pick a dataset, name the run, optionally pin agent/general config versions, click **Run**.
+3. Each annotation is replayed as a one-turn query against its referenced document. The results table shows question, expected answer, agent answer, doc, status, and any error.
+
+### Score predictions
+
+1. **Evaluation → Judge Run**: pick the run + one or more metrics.
+2. **Manual**: navigate prediction-by-prediction, enter score + comment per metric.
+3. **LLM**: the judge model is given the metric description, the metric's optional judge prompt, the question/expected/agent answers, and any context, and returns `{score, reason}` per prediction × metric.
+4. Per-metric aggregates roll up live using each metric's declared aggregation.
+
+### Edit agents and prompts from the UI
+
+1. **Config → Agent Config**: edit `agents.json` or `prompts.json`, save. A snapshot is written under `src/config_versions/`.
+2. In **Evaluation → Execution Run**, pin a specific agent-config version for the run so it's reproducible.
+
+### Switch backends (Ollama ↔ OpenRouter)
+
+Edit `src/agents_config/agents.json` (or do it in **Config → Agent Config**): for each agent set `"backend"` to `"local"` or `"openrouter"` and update `"model"` accordingly. To swap configs wholesale, set `AGENTS_CONFIG_PATH=src/agents_config/agents.openrouter.json`.
 
 ---
 
 ## Configuration
 
-### Environment Variables
+Copy `env.example` → `.env`. Every setting is also editable from **Config → System**.
 
-#### LLM Backend
+### Backends
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `OLLAMA_BASE_URL` | `http://localhost:11434/v1` | Ollama API endpoint |
-| `OPENROUTER_API_KEY` | - | OpenRouter API key for cloud inference (set and switch backend in `agents.json`) |
+| Variable             | Default                          | Description                                       |
+|----------------------|----------------------------------|---------------------------------------------------|
+| `OLLAMA_BASE_URL`    | `http://localhost:11434/v1`      | Ollama API endpoint                               |
+| `OPENROUTER_API_KEY` | —                                | Required if any agent uses `backend: openrouter`  |
 
-#### Personal Information
+### Default models (referenced by `agents.json` via `${VAR}`)
 
-| Variable | Description |
-|----------|-------------|
-| `PERSONAL_INFO_JSON` | JSON object with user's personal data: `{"name":"...","email":"..."}` |
+| Variable         | Description                                   |
+|------------------|-----------------------------------------------|
+| `DEFAULT_MODEL`  | Generic fallback model                        |
+| `DEFAULT_LIGHT`  | Lightweight model (e.g. for ingestion)        |
+| `DEFAULT_MID`    | Mid-tier model (e.g. main agent)              |
+| `DEFAULT_HIGH`   | High-tier model (e.g. reviewer)               |
 
-#### PDF Storage
+`agents.json` substitutes `${VAR}` at load time. Unset references fail fast at startup.
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `PDF_JSON_MAX_BYTES` | `2000000` | Max file size (bytes) for JSON storage |
-| `PDF_SQLITE_DIR` | `data` | Directory for SQLite database files |
-| `PDF_STORAGE_DIR` | `data/pdfs` | Directory for permanent PDF file storage |
+### PDF storage and ingestion
 
-#### Query Processing
+| Variable               | Default       | Description                                        |
+|------------------------|---------------|----------------------------------------------------|
+| `PDF_SQLITE_DIR`       | `data`        | SQLite DB directory                                |
+| `PDF_STORAGE_DIR`      | `data/pdfs`   | Permanent PDF file storage                         |
+| `PDF_JSON_DIR`         | `data`        | Optional JSON export directory for small docs      |
+| `PDF_JSON_MAX_BYTES`   | `2000000`     | Max file size to also dump as JSON                 |
+| `USE_ENRICHMENT`       | `true`        | Run the ingestion agent on each page               |
+| `SHOW_INGESTION_LOGS`  | `false`       | Stream per-page enrichment progress in the chat UI |
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `INLINE_DOC_MAX_CHARS` | `20000` | Max characters to inline in prompt |
-| `SHOW_REASONING` | `true` | Display `<think>` tags in UI |
-| `SHOW_INGESTION_LOGS` | `false` | Stream per-page ingestion progress in chat UI |
+### Query cache
 
-#### Query Caching
+| Variable                    | Default | Description                          |
+|-----------------------------|---------|--------------------------------------|
+| `QUERY_CACHE_ENABLED`       | `true`  | Toggle the query cache               |
+| `QUERY_CACHE_MAX_PER_FILE`  | `10`    | Max cached queries per document      |
+| `INLINE_DOC_MAX_CHARS`      | `20000` | Inline the doc into the prompt below this size |
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `QUERY_CACHE_ENABLED` | `true` | Enable/disable query caching |
-| `QUERY_CACHE_MAX_PER_FILE` | `10` | Max cached queries per document |
+### Evaluation and judge
 
-**Note:** Cached queries are automatically deleted when documents are removed. Use the "Flush Cache" button in the UI to manually clear cached queries.
+| Variable             | Default     | Description                                              |
+|----------------------|-------------|----------------------------------------------------------|
+| `EVAL_CONCURRENCY`   | `1`         | Parallel annotations per execution run                   |
+| `EVAL_MAX_SAMPLES`   | —           | Cap on annotations per run                               |
+| `EVAL_SHUFFLE`       | `false`     | Shuffle dataset before running                           |
+| `EVAL_SEED`          | —           | Seed for shuffling                                       |
+| `EVAL_CONTEXT_MODE`  | `full_doc`  | `full_doc` \| `spans_only` \| `question_only`            |
+| `JUDGE_CONCURRENCY`  | `1`         | Parallel `(prediction × metric)` judgments. Keep at 1 for local Ollama |
 
-#### Logging
+### Personal info validation
 
-| Variable | Description |
-|----------|-------------|
-| `LOG_LEVEL` | Logging level (DEBUG, INFO, WARNING, ERROR) |
-| `LOG_FILE_PREFIX` | Optional prefix for auto-named log file: `logs/{prefix}_{YYYYMMDD_HHMMSS}.log` |
-| `LOG_TO_FILE` | Enable file logging (true/false, default: true) |
-| `LOG_TO_STDOUT` | Stream logs to terminal in addition to file (true/false, default: false) |
+| Variable              | Description                                                                 |
+|-----------------------|-----------------------------------------------------------------------------|
+| `PERSONAL_INFO_JSON`  | JSON object (`{"name":"...","email":"..."}`) the validator checks claims against |
 
-### Default models
+### Logging
 
-Set `DEFAULT_MODEL` / `DEFAULT_LIGHT` / `DEFAULT_MID` / `DEFAULT_HIGH` in `.env` and reference them from `src/agents_config/agents.json` using `${VAR}` placeholders, e.g.:
+| Variable           | Default      | Description                                            |
+|--------------------|--------------|--------------------------------------------------------|
+| `LOG_LEVEL`        | `INFO`       | `DEBUG` \| `INFO` \| `WARNING` \| `ERROR`              |
+| `LOG_TO_FILE`      | `true`       | Write logs to file                                     |
+| `LOG_FILE_PREFIX`  | `Doc2Agent`  | Auto-named log: `logs/{prefix}_{YYYYMMDD_HHMMSS}.log`  |
+| `LOG_TO_STDOUT`    | `false`      | Also stream to terminal                                |
 
-```json
-"main":      { "model": "${DEFAULT_MID}",   "backend": "openrouter", "temperature": 0.2 },
-"reviewer":  { "model": "${DEFAULT_HIGH}",  "backend": "openrouter", "temperature": 0.1 },
-"ingestion": { "model": "${DEFAULT_LIGHT}", "backend": "openrouter", "temperature": 0.0 }
-```
+The startup banner prints the resolved log file path.
 
-Placeholders are resolved at config load. If a referenced var is unset, startup fails with a clear error. Literal model strings still work.
+### Misc
 
-### Editing config from the UI
-
-Open **Config → System** to view and edit every supported `.env` variable from the browser. Settings are split into *Live* (applied on save: log level, eval defaults, model overrides, cache settings, …) and *Restart-required* (cached at startup: `USE_ENRICHMENT`, `SHOW_REASONING`, `ASSISTANT_NAME`, log file paths). The *Save & Restart* button writes `.env` and relaunches the process.
-
-### Config files
-
-- **Agent/model/backend config**: `src/agents_config/agents.json` (and `src/agents_config/agents.openrouter.json`)
-- **Prompts**: `src/agents_config/prompts.json` (system prompts are fully editable here)
-
----
-
-## Tech Stack
-
-- **UI Framework**: [Gradio](https://github.com/gradio-app/gradio) — multi-page app (Chat / Datasets / Evaluation / Config / Dashboard) with client-side PDF rendering via PDF.js
-- **Agent Framework**: [pydantic-ai](https://github.com/pydantic/pydantic-ai) - Type-safe AI agents
-- **LLM Backend**: [Ollama](https://ollama.com/) - Local LLM inference
-- **PDF Processing**: [PyMuPDF (fitz)](https://pymupdf.readthedocs.io/) - High-performance PDF parsing
-- **Storage**: SQLite with FTS5 - Full-text search and document persistence
-- **Configuration**: python-dotenv - Environment variable management
-- **Package Management**: uv - Fast Python package manager
+| Variable                | Default                                  | Description                              |
+|-------------------------|------------------------------------------|------------------------------------------|
+| `ASSISTANT_NAME`        | `Doc2Agent`                              | App display name                         |
+| `SHOW_REASONING`        | `true`                                   | Parse `<think>` tags (deepseek-r1, qwq)  |
+| `AGENTS_CONFIG_PATH`    | `src/agents_config/agents.json`          | Path to the agent config to load         |
+| `PROMPTS_CONFIG_PATH`   | `src/agents_config/prompts.json`         | Path to the prompts config to load       |
 
 ---
 
-## Project Structure
+## Storage
+
+A single SQLite database (under `PDF_SQLITE_DIR`) holds everything:
+
+- `documents`, `pages`, `pages_fts` — ingested PDFs + FTS5 index.
+- `query_cache` — cached chat answers per document.
+- `chat_sessions`, `chat_messages` — chat history.
+- `annotation_sets`, `annotations`, `annotation_spans` — manual annotations and their span references.
+- `datasets`, `dataset_annotations` — datasets and the annotations they include.
+- Evaluation tables — runs, predictions, judge runs, per-metric judgments.
+
+---
+
+## Project layout
 
 ```
 Doc2Agent/
 ├── app/
-│   ├── gradio_app.py             # Gradio UI entry point (homepage + Chat/Datasets/Evaluation/Config/Dashboard routes)
-│   ├── annotation_tab.py         # Annotate Documents tab (Datasets page)
-│   ├── datasets_tab.py           # Live Chat Datasets tab (Datasets page)
-│   ├── evaluation_tab.py         # Execution Run, Metrics, and Judge Run tabs
-│   ├── dashboard_tab.py          # Data and Evaluations dashboard tabs
-│   ├── static/annotator.js       # PDF.js viewer + span bridge
-│   └── utils.py                  # UI utilities (framework-agnostic)
+│   ├── gradio_app.py          # Entry point; defines all routes
+│   ├── pdf_ingest.py          # Upload + ingestion handlers
+│   ├── annotation_tab.py      # Datasets → Annotate Documents
+│   ├── datasets_tab.py        # Datasets → Live Chat Datasets
+│   ├── documents_tab.py       # Documents page
+│   ├── evaluation_tab.py      # Evaluation: Execution Run, Judge Run, Metrics
+│   ├── dashboard_tab.py       # Dashboard: Data + Evaluations
+│   ├── system_tab.py          # Config → System (.env editor)
+│   ├── agent_config_tab.py    # Config → Agent Config (agents.json / prompts.json)
+│   ├── adhoc_tab.py           # Ad-hoc utilities
+│   ├── ui_components.py       # Reusable UI helpers
+│   ├── utils.py               # Framework-agnostic helpers
+│   └── static/annotator.js    # PDF.js viewer + span bridge
 ├── src/
-│   ├── agents/
-│   │   ├── base.py              # Agent creation and execution
-│   │   ├── main.py              # Main agent implementation
-│   │   ├── reviewer.py          # Reviewer agent
-│   │   ├── ingestion.py         # Ingestion agent
-│   │   └── tooling.py           # Tool registration
-│   ├── agents_config/
-│   │   ├── agents.json          # Agent configurations
-│   │   ├── prompts.json         # System prompts
-│   │   └── schemas.py           # Config schemas
-│   ├── annotation/              # Annotation set / span helpers
-│   ├── chat/
-│   │   └── assistant.py         # Chat orchestration
-│   ├── evaluation/
-│   │   ├── runner.py            # Evaluation run executor (one-turn replay)
-│   │   └── judge.py             # Manual + LLM-as-judge scoring
-│   ├── schemas/
-│   │   ├── document.py          # Document and page schemas
-│   │   ├── annotation.py        # Annotation / span models
-│   │   └── evaluation.py        # EvaluationRun / Prediction / Metric / JudgeRun / Result models
-│   ├── storage/
-│   │   └── sqlite_store.py      # SQLite persistence layer (chat, annotations, datasets, eval, judge)
-│   ├── tools/
-│   │   ├── pdf_parser.py        # PDFParser (PyMuPDF)
-│   │   ├── pdf.py               # Legacy PDF tools
-│   │   └── retrieval.py         # Search utilities
-│   ├── bootstrap.py             # Application initialization
-│   └── logging.py               # Logging setup
-├── tests/                       # Unit tests
-├── docs/                        # Documentation
-├── data/                        # Data storage (SQLite, PDFs, JSON)
-└── uploads/                     # Temporary upload directory
+│   ├── agents/                # base, main, reviewer, ingestion, tooling
+│   ├── agents_config/         # agents.json, agents.openrouter.json, prompts.json, schemas
+│   ├── annotation/            # annotation helpers
+│   ├── chat/assistant.py      # Chat orchestration
+│   ├── config/                # env_schema, env_writer (versioned saves)
+│   ├── config_versions/       # Snapshot history for system + agent configs
+│   ├── evaluation/            # runner.py (replay), judge.py (manual + LLM judge)
+│   ├── schemas/               # document, annotation, evaluation models
+│   ├── storage/sqlite_store.py
+│   ├── tools/                 # pdf, pdf_parser, retrieval
+│   ├── bootstrap.py           # init_app
+│   └── logging.py
+├── tests/unit/                # pytest suites per package
+├── docs/                      # architecture, blueprint
+└── data/                      # SQLite DB + stored PDFs (gitignored)
 ```
 
 ---
 
 ## Development
 
-### Code Quality
-
 ```bash
-make lint       # Format code with black and isort
-make lint-check # Check formatting without modifying files
-make test       # Run test suite
+make run         # uv run python app/gradio_app.py
+make test        # uv run pytest
+make lint        # black + isort
+make lint-check  # black --check + isort --check-only
 ```
 
-### Running Tests
-
-```bash
-uv run pytest
-```
-
-### Project Setup
-
-The project uses `uv` for dependency management. Key commands:
-
-- `uv sync` - Install dependencies
-- `uv run <command>` - Run commands in the project environment
-- `uv add <package>` - Add a new dependency
+Tests live under `tests/unit/` covering agents, chat, storage, evaluation, config, and tools.
 
 ---
 
-## Usage
+## Contributing
 
-### Basic Workflow
-
-1. **Start the application:**
-   ```bash
-   make run
-   ```
-
-2. **Upload a document:**
-   - Click the upload button in the sidebar
-   - Select a PDF file
-   - Wait for ingestion to complete
-
-3. **Ask questions:**
-   - Type your question in the chat interface
-   - The system will search the document and generate an answer
-
-4. **Manage documents:**
-   - Use the "Cached Documents" dropdown to view and select documents
-   - Click "Load" to switch to a cached document
-   - Click "Delete" to remove a document, or "Flush Cache" to clear cached queries
-
-### Datasets page
-
-Open **Datasets** from the navbar.
-
-**Live Chat Datasets** tab — create a dataset, pick a chat session, choose:
-- **Auto** — exports every (user, assistant) turn as an `Annotation` (with retrieved context + reasoning trace as evidence spans).
-- **Manual** — pick the specific user messages to include.
-
-A single dataset can aggregate turns from multiple sessions. The preview pane shows current contents and offers a JSON export.
-
-**Annotate Documents** tab — pick or upload a PDF, create/select an **annotation set**, stage spans (text selection or page), enter Q&A, **Save**. Then, in the same tab's sidebar, either select an existing dataset and click **Add set → dataset**, or type a name under **Or create new dataset** and click **Create & add set**. Annotations + spans + the doc reference are stored alongside chat-exported ones.
-
-### Evaluation page
-
-**Execution Run** tab — pick a dataset, name the run, optionally override agent config, click **Run**. The runner replays each annotation as a one-turn query against the existing chat pipeline (no prior history) using the document referenced by that annotation. Each prediction is stored with status (`success | failed | skipped`), the agent answer, optional thoughts, and any error message. The results table shows question, expected answer, agent answer, document, and status side by side.
-
-**Judge Run** tab — pick an evaluation run and one or more metrics, then choose **manual** or **llm**:
-- *Manual*: navigate prediction-by-prediction, enter a score and optional comment per metric.
-- *LLM*: a judge model receives the metric description, optional metric-specific judge prompt, the question, expected answer, agent answer, and any evidence/context, and returns a structured `{score, reason}` per prediction × metric.
-
-Aggregates per metric (using the metric's declared aggregation) are shown live, along with judged / total counts.
-
-### Config page
-
-**Metrics** tab — create reusable metrics with name, description, type (`bool | int | float`), aggregation (`avg | sum | min | max`), optional min/max range, and an optional LLM judge prompt. Metrics created here are reusable across judge runs.
-
-### Dashboard page
-
-**Data** tab — KPIs (documents, annotation sets, annotations, datasets) plus searchable, scrollable tables for each.
-
-**Evaluations** tab — KPIs (runs, predictions, judge runs, judgments, failed runs, metrics), evaluation runs table, judge runs table, a per-judge-run × per-metric pivot, a global metric rollup, and a failure-inspection block (failed predictions, low-score judgments, predictions missing document references).
-
-### Advanced Features
-
-- **Multiple documents**: Upload and switch between multiple PDFs
-- **Query caching**: Frequently asked questions are cached for faster responses
-- **Personal info validation**: Configure personal information to validate document claims
-- **Reasoning traces**: Enable `SHOW_REASONING=true` to see agent reasoning steps
+Issues and PRs welcome. Before pushing, please run `make lint` and `make test`. New code should follow the existing module layout (`app/` for UI, `src/` for everything else) and stay framework-agnostic where it can — Gradio touches only `app/`.
 
 ---
 
 ## License
 
-MIT License - see LICENSE file for details
+MIT — see [LICENSE](LICENSE).
