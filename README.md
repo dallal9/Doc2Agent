@@ -128,7 +128,7 @@ make run
 
 - Logs to file by default and prints the resolved log file path on startup.
 - Optional terminal streaming via `LOG_TO_STDOUT=true`.
-- Configurable via: `LOG_LEVEL`, `LOG_TO_FILE`, `LOG_FILE`, `LOG_TO_STDOUT`.
+- Configurable via: `LOG_LEVEL`, `LOG_TO_FILE`, `LOG_FILE_PREFIX`, `LOG_TO_STDOUT`.
 
 ### Configuration
 
@@ -238,7 +238,7 @@ For detailed architecture documentation, see [docs/architecture.md](docs/archite
 | Variable | Description |
 |----------|-------------|
 | `LOG_LEVEL` | Logging level (DEBUG, INFO, WARNING, ERROR) |
-| `LOG_FILE` | Path to log file |
+| `LOG_FILE_PREFIX` | Optional prefix for auto-named log file: `logs/{prefix}_{YYYYMMDD_HHMMSS}.log` |
 | `LOG_TO_FILE` | Enable file logging (true/false, default: true) |
 | `LOG_TO_STDOUT` | Stream logs to terminal in addition to file (true/false, default: false) |
 

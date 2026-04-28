@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
+import tempfile
 
 import gradio as gr
 
@@ -279,6 +281,24 @@ def on_documents_flush_all(assistant: ChatAssistant | None):
     )
 
 
+def on_documents_export_json(doc_id: str | None, assistant: ChatAssistant | None):
+    """Dump the full DocumentSchema (metadata + enriched pages) — i.e. what
+    the agents see when this document is referenced — to a temp JSON file
+    and return its path for download."""
+    if assistant is None or not doc_id:
+        return None
+    doc = assistant.store.load_document(doc_id)
+    if doc is None:
+        return None
+    safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", doc.metadata.file_name or doc_id)
+    base = safe_name.rsplit(".", 1)[0] or doc_id
+    tmp_dir = tempfile.mkdtemp(prefix="d2a_export_")
+    out_path = os.path.join(tmp_dir, f"{base}.json")
+    with open(out_path, "w", encoding="utf-8") as f:
+        f.write(doc.model_dump_json(indent=2))
+    return out_path
+
+
 async def on_documents_tab_load(assistant: ChatAssistant | None):
     if assistant is None:
         assistant = ChatAssistant()
@@ -299,6 +319,9 @@ def build_documents_tab(assistant_state: gr.State):
             doc_dd = gr.Dropdown(label="Cached Documents", choices=[], interactive=True)
             with gr.Row():
                 delete_btn = gr.Button("Delete", variant="stop", size="sm")
+                download_json_btn = gr.DownloadButton(
+                    "Download JSON", size="sm", visible=True
+                )
             with gr.Row():
                 flush_btn = gr.Button("Clear Cached Replies (Selected Doc)", size="sm")
                 flush_all_btn = gr.Button(
@@ -339,6 +362,12 @@ def build_documents_tab(assistant_state: gr.State):
             metadata_md,
             enrichment_md,
         ],
+    )
+
+    download_json_btn.click(
+        fn=on_documents_export_json,
+        inputs=[doc_dd, assistant_state],
+        outputs=[download_json_btn],
     )
 
     flush_btn.click(

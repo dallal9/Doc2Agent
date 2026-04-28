@@ -107,11 +107,12 @@ ENV_VARS: list[EnvVar] = [
         "live",
     ),
     EnvVar(
-        "LOG_FILE",
+        "LOG_FILE_PREFIX",
         "str",
         None,
         "Logging",
-        "Path to log file (auto-generated under logs/ if unset).",
+        "Optional prefix for the auto-generated log filename "
+        "(logs/{prefix}_{YYYYMMDD_HHMMSS}.log).",
         "restart",
     ),
     EnvVar(

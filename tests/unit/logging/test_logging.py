@@ -20,10 +20,26 @@ def test_setup_logging_with_file():
         log_mod._configured = False
         logging.getLogger().handlers.clear()
 
-        with patch.dict(os.environ, {"LOG_FILE": log_file, "LOG_TO_FILE": "false"}):
-            logger = setup_logging("test_file")
+        with patch.dict(os.environ, {"LOG_TO_FILE": "false"}):
+            log_mod.configure_logging(log_file=log_file)
+            logger = logging.getLogger("test_file")
             logger.info("test message")
 
             assert os.path.exists(log_file)
             with open(log_file) as f:
                 assert "test message" in f.read()
+
+
+def test_setup_logging_uses_prefix(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    log_mod._configured = False
+    logging.getLogger().handlers.clear()
+    monkeypatch.setenv("LOG_FILE_PREFIX", "myrun")
+    monkeypatch.setenv("LOG_TO_FILE", "true")
+
+    log_mod.configure_logging()
+    logger = logging.getLogger("test_prefix")
+    logger.info("hello")
+
+    files = list((tmp_path / "logs").glob("myrun_*.log"))
+    assert len(files) == 1
