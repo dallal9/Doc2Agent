@@ -227,8 +227,39 @@ def version_choices(kind: Kind) -> list[tuple[str, str]]:
 # ---------- bootstrap default ----------
 
 
+def _active_pointer_path(kind: Kind) -> Path:
+    return _kind_dir(kind) / "_active.txt"
+
+
+def set_active_version(kind: Kind, version_id: str) -> None:
+    """Record `version_id` as the live version for `kind` (survives restart)."""
+    if not get_version(kind, version_id):
+        raise ValueError(f"Version not found: {kind}/{version_id}")
+    _active_pointer_path(kind).write_text(version_id, encoding="utf-8")
+
+
+def get_active_version_id(kind: Kind) -> str | None:
+    """Return the recorded active version id, or None if unset / missing."""
+    p = _active_pointer_path(kind)
+    if not p.exists():
+        return None
+    vid = p.read_text(encoding="utf-8").strip()
+    if not vid:
+        return None
+    if not (_kind_dir(kind) / f"{vid}.json").exists():
+        return None
+    return vid
+
+
 def ensure_default_version(kind: Kind) -> Version:
-    """Guarantee at least one version exists for `kind`. Returns the latest."""
+    """Guarantee at least one version exists for `kind`. Returns the active
+    version if one is recorded; otherwise the most recent snapshot (creating
+    one from current state if none exist)."""
+    active_id = get_active_version_id(kind)
+    if active_id:
+        active = get_version(kind, active_id)
+        if active is not None:
+            return active
     existing = list_versions(kind)
     if existing:
         return existing[0]

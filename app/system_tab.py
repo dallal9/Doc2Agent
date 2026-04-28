@@ -26,6 +26,7 @@ from src.config_versions import (
     general_allowed_keys,
     get_version,
     save_version,
+    set_active_version,
     version_choices,
 )
 from src.logging import setup_logging
@@ -200,12 +201,15 @@ def build_system_tab(assistant_state: gr.State | None = None):
 
     with gr.Row():
         save_btn = gr.Button("Save new version", variant="primary")
+        apply_btn = gr.Button("Apply & Restart", variant="primary")
         delete_btn = gr.Button("Delete current version", variant="stop")
     gr.Markdown(
         "_**Save new version** writes the form values to `.env`, creates an "
         "immutable snapshot, and **restarts the app** so all settings (including "
-        "restart-required ones) take effect cleanly. The OpenRouter token is "
-        "written to `.env` but never stored in a version snapshot._"
+        "restart-required ones) take effect cleanly. **Apply & Restart** writes "
+        "the selected version's snapshot to `.env` and restarts without creating "
+        "a new version — use this to switch back to an old config. The OpenRouter "
+        "token is written to `.env` but never stored in a version snapshot._"
     )
 
     # ---- handlers ----
@@ -231,6 +235,7 @@ def build_system_tab(assistant_state: gr.State | None = None):
             label=label,
             description=desc,
         )
+        set_active_version("general", ver.id)
         logger.warning(
             "System tab: save new version=%s, %d keys -> env=%s. Restarting.",
             ver.id,
@@ -273,6 +278,7 @@ def build_system_tab(assistant_state: gr.State | None = None):
             ]
         logger.info("Deleted general config version=%s", version_id)
         latest = ensure_default_version("general")
+        set_active_version("general", latest.id)
         # Reload the latest version into the form so the UI matches the new active version.
         content = latest.content or {}
         field_updates = []
@@ -288,6 +294,22 @@ def build_system_tab(assistant_state: gr.State | None = None):
             *field_updates,
             f"🗑️ Deleted `{version_id}`. Active version: `{latest.id}`.",
         ]
+
+    def on_apply(version_id):
+        if not version_id:
+            return "Select a version first."
+        v = get_version("general", version_id)
+        if v is None:
+            return f"Version `{version_id}` not found."
+        path = _save_to_env(v.content or {})
+        set_active_version("general", v.id)
+        logger.warning(
+            "System tab: apply existing version=%s -> env=%s. Restarting.",
+            v.id,
+            path,
+        )
+        _schedule_restart()
+        return f"♻️ Applied `{v.id}` to `{path}`. Restarting now — " "reconnect in a few seconds."
 
     def on_refresh():
         return gr.update(choices=version_choices("general"))
@@ -309,6 +331,7 @@ def build_system_tab(assistant_state: gr.State | None = None):
         inputs=[version_dd],
         outputs=[*all_inputs, status_md],
     )
+    apply_btn.click(fn=on_apply, inputs=[version_dd], outputs=[status_md])
     refresh_btn.click(fn=on_refresh, outputs=[version_dd])
 
     return status_md

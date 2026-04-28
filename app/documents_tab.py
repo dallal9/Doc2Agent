@@ -363,9 +363,7 @@ def build_documents_tab(assistant_state: gr.State):
             doc_dd = gr.Dropdown(label="Cached Documents", choices=[], interactive=True)
             with gr.Row():
                 delete_btn = gr.Button("Delete", variant="stop", size="sm")
-                download_json_btn = gr.DownloadButton(
-                    "Download JSON", size="sm", visible=True
-                )
+                download_json_btn = gr.DownloadButton("Download JSON", size="sm", visible=True)
             with gr.Row():
                 flush_btn = gr.Button("Clear Cached Replies (Selected Doc)", size="sm")
                 flush_all_btn = gr.Button(

@@ -12,6 +12,16 @@ class PDFParser:
     def __init__(self, file_path: str | Path):
         self.file_path = str(file_path)
         self.doc = fitz.open(self.file_path)
+        # Flatten interactive content (AcroForm + XFA widgets, annotations) so
+        # filled-in form values become part of get_text() output. Without this,
+        # XFA-based forms (common in gov / legal PDFs) yield empty widgets() and
+        # the filled values are invisible. Done in-memory; the source file is
+        # not modified.
+        if hasattr(self.doc, "bake"):
+            try:
+                self.doc.bake()
+            except Exception:
+                pass
 
     def _generate_doc_id(self) -> str:
         return hashlib.md5((self.file_path + str(self.doc.page_count)).encode()).hexdigest()
