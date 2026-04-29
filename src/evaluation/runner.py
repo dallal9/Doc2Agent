@@ -113,7 +113,10 @@ def _extract_context(result) -> str | None:
     return "\n\n---\n\n".join(parts) if parts else None
 
 
-def _spans_block(spans: list[dict] | None) -> str:
+SPAN_PAGE_MAX_CHARS = 4000
+
+
+def _spans_block(spans: list[dict] | None, store=None, doc_id: str | None = None) -> str:
     if not spans:
         return ""
     lines: list[str] = []
@@ -121,6 +124,13 @@ def _spans_block(spans: list[dict] | None) -> str:
         kind = s.get("kind", "text")
         page = s.get("page_num", 0)
         text = (s.get("quoted_text") or "").strip()
+        if kind == "page" and not text and store is not None and doc_id and isinstance(page, int):
+            page_text = (store.get_page_text(doc_id, page) or "").strip()
+            if page_text:
+                if len(page_text) > SPAN_PAGE_MAX_CHARS:
+                    page_text = page_text[:SPAN_PAGE_MAX_CHARS] + "…"
+                lines.append(f"[Page {page}]\n{page_text}")
+                continue
         if kind == "page" and not text:
             lines.append(f"[Page {page}] (full page referenced)")
         elif text:
@@ -166,7 +176,7 @@ def _build_eval_prompt(
         elif assistant.text:
             doc_block = f"Document text (truncated):\n{assistant.text[:max_chars]}\n\n"
     elif context_mode == "spans_only":
-        doc_block = _spans_block(spans)
+        doc_block = _spans_block(spans, assistant.store, assistant.document_id)
     # "question_only" → no doc_block
 
     # deps still reference the loaded doc so tools (search_fts, query_pages)

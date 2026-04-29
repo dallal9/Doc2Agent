@@ -94,7 +94,10 @@ def _create_batch_judge_agent(
     return agent
 
 
-def _format_spans(spans: list[dict] | None) -> str:
+SPAN_PAGE_MAX_CHARS = 4000
+
+
+def _format_spans(spans: list[dict] | None, store=None, doc_id: str | None = None) -> str:
     if not spans:
         return "(no evidence spans)"
     out = []
@@ -102,6 +105,13 @@ def _format_spans(spans: list[dict] | None) -> str:
         kind = s.get("kind", "text")
         page = s.get("page_num", "?")
         text = (s.get("quoted_text") or "").strip()
+        if kind == "page" and not text and store is not None and doc_id and isinstance(page, int):
+            page_text = (store.get_page_text(doc_id, page) or "").strip()
+            if page_text:
+                if len(page_text) > SPAN_PAGE_MAX_CHARS:
+                    page_text = page_text[:SPAN_PAGE_MAX_CHARS] + "…"
+                out.append(f"[Page {page}] (full page)\n{page_text}")
+                continue
         if kind == "page" and not text:
             out.append(f"[Page {page}] (full page referenced)")
         elif text:
@@ -136,7 +146,7 @@ def _clip_score(score: float, metric: dict) -> float:
     return value
 
 
-def _build_judge_prompt(prediction: dict, metric: dict) -> str:
+def _build_judge_prompt(prediction: dict, metric: dict, store=None) -> str:
     metric_prompt = (metric.get("judge_prompt") or "").strip()
     metric_prompt_block = f"Metric judge guidance:\n{metric_prompt}\n\n" if metric_prompt else ""
     mtype = metric.get("type", "float")
@@ -158,7 +168,7 @@ def _build_judge_prompt(prediction: dict, metric: dict) -> str:
     answer = prediction.get("agent_answer") or ""
     thoughts = prediction.get("agent_thoughts") or ""
     context = prediction.get("context_used") or ""
-    spans_block = _format_spans(prediction.get("spans"))
+    spans_block = _format_spans(prediction.get("spans"), store, prediction.get("doc_id"))
     doc_ref = prediction.get("doc_name") or prediction.get("document_reference") or "—"
 
     return (
@@ -191,7 +201,7 @@ def _scale_hint(metric: dict) -> str:
     return f"float in [{lo}, {hi}]"
 
 
-def _build_batch_judge_prompt(prediction: dict, metrics: list[dict]) -> str:
+def _build_batch_judge_prompt(prediction: dict, metrics: list[dict], store=None) -> str:
     """Build the user message for a batch (multi-metric) judge call.
 
     The system prompt (assistant.prompts.judge) is the global preamble. This
@@ -215,7 +225,7 @@ def _build_batch_judge_prompt(prediction: dict, metrics: list[dict]) -> str:
     answer = prediction.get("agent_answer") or ""
     thoughts = prediction.get("agent_thoughts") or ""
     context = prediction.get("context_used") or ""
-    spans_block = _format_spans(prediction.get("spans"))
+    spans_block = _format_spans(prediction.get("spans"), store, prediction.get("doc_id"))
     doc_ref = prediction.get("doc_name") or prediction.get("document_reference") or "—"
 
     return (
@@ -236,6 +246,7 @@ async def judge_prediction_batch(
     judge_agent: Agent[None, BatchJudgeOutput],
     prediction: dict,
     metrics: list[dict],
+    store=None,
 ) -> dict[str, tuple[float, str]]:
     """Score one prediction against all selected metrics in a single call.
 
@@ -243,7 +254,7 @@ async def judge_prediction_batch(
     LLM omitted are absent; metrics it hallucinated (unknown name) are
     dropped with a warning.
     """
-    prompt = _build_batch_judge_prompt(prediction, metrics)
+    prompt = _build_batch_judge_prompt(prediction, metrics, store)
     result = await run_agent(judge_agent, prompt, label="judge")
     out = result.output
     if isinstance(out, BatchJudgeOutput):
@@ -269,9 +280,10 @@ async def judge_prediction(
     judge_agent: Agent[None, JudgeOutput],
     prediction: dict,
     metric: dict,
+    store=None,
 ) -> tuple[float, str]:
     """Score one (prediction, metric) pair. Returns (clipped_score, reason)."""
-    prompt = _build_judge_prompt(prediction, metric)
+    prompt = _build_judge_prompt(prediction, metric, store)
     result = await run_agent(judge_agent, prompt, label="judge")
     out = result.output
     if isinstance(out, JudgeOutput):
@@ -333,7 +345,7 @@ async def run_llm_judge(
     async def _judge_prediction(full: dict) -> None:
         async with sem:
             try:
-                scored = await judge_prediction_batch(judge_agent, full, metrics)
+                scored = await judge_prediction_batch(judge_agent, full, metrics, store)
                 ok_local = 0
                 failed_local = 0
                 for metric in metrics:

@@ -557,6 +557,13 @@ class SQLiteStore:
     def get_all_pages(self, doc_id: str) -> list[PageSchema]:
         return list(self.query_pages(doc_id, limit=-1))
 
+    def get_page_text(self, doc_id: str, page_num: int) -> str | None:
+        row = self.conn.execute(
+            "SELECT text FROM pages WHERE doc_id = ? AND page_num = ?",
+            (doc_id, page_num),
+        ).fetchone()
+        return row["text"] if row else None
+
     def search_text(self, doc_id: str, query: str, limit: int = 10) -> list[PageSchema]:
         """Full-text search using FTS5.
 
