@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+from datetime import datetime
 from pathlib import Path
 
 import gradio as gr
@@ -129,19 +130,22 @@ def _schedule_restart() -> None:
     threading.Thread(target=_restart, daemon=True).start()
 
 
+def _auto_name(prefix: str = "system") -> str:
+    return f"{prefix}-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+
+
 def build_system_tab(assistant_state: gr.State | None = None):
     default_v = ensure_default_version("general")
 
     gr.Markdown(
         "## System — environment configuration\n"
         "Versions are immutable snapshots stored under "
-        "`data/config_versions/general/`. Pick a version to load it into the "
-        "form; **Save new version** writes `.env`, snapshots a new version, "
-        "and restarts the app."
+        "`data/config_versions/general/`. Pick a version, then **Apply & "
+        "Restart** to switch the live `.env` to it, or edit the form below and "
+        "**Save new version** to snapshot the current form values and restart."
     )
 
     # ---- Versions block (top) ----
-    gr.Markdown("### Versions")
     with gr.Row():
         version_dd = gr.Dropdown(
             label="Version",
@@ -151,6 +155,8 @@ def build_system_tab(assistant_state: gr.State | None = None):
             scale=4,
         )
         refresh_btn = gr.Button("Refresh", size="sm", scale=1)
+        apply_btn = gr.Button("Apply & Restart", variant="primary", scale=1)
+        delete_btn = gr.Button("Delete", variant="stop", scale=1)
 
     status_md = gr.Markdown("")
 
@@ -183,45 +189,31 @@ def build_system_tab(assistant_state: gr.State | None = None):
     all_inputs = live_inputs + restart_inputs
     all_keys = live_keys + restart_keys
 
-    gr.Markdown("### New version metadata")
+    gr.Markdown("### Save as new version")
     with gr.Row():
-        new_keyword_in = gr.Textbox(
-            label="Keyword (optional)",
-            placeholder="e.g. baseline / low-temp / eval-v3",
-            scale=2,
-        )
         new_name_in = gr.Textbox(
-            label="Name (optional)",
-            placeholder="Leave blank to use the auto-generated id",
+            label="Name",
+            value=_auto_name("system"),
             scale=2,
         )
-    with gr.Row():
-        new_label_in = gr.Textbox(label="Label (optional)", scale=1)
-        new_desc_in = gr.Textbox(label="Description (optional)", scale=2)
-
-    with gr.Row():
-        save_btn = gr.Button("Save new version", variant="primary")
-        apply_btn = gr.Button("Apply & Restart", variant="primary")
-        delete_btn = gr.Button("Delete current version", variant="stop")
+        new_desc_in = gr.Textbox(label="Description (optional)", scale=3)
+    save_btn = gr.Button("Save new version", variant="primary")
     gr.Markdown(
         "_**Save new version** writes the form values to `.env`, creates an "
-        "immutable snapshot, and **restarts the app** so all settings (including "
-        "restart-required ones) take effect cleanly. **Apply & Restart** writes "
-        "the selected version's snapshot to `.env` and restarts without creating "
-        "a new version — use this to switch back to an old config. The OpenRouter "
-        "token is written to `.env` but never stored in a version snapshot._"
+        "immutable snapshot, and restarts the app. The OpenRouter token is "
+        "written to `.env` but never stored in a version snapshot._"
     )
 
     # ---- handlers ----
 
-    def on_save(keyword, name, label, desc, *values):
+    def on_save(name, desc, *values):
         live_values = list(values[: len(live_keys)])
         restart_values = list(values[len(live_keys) :])
         try:
             live_updates = _collect_updates(live_keys, live_values)
             restart_updates = _collect_updates(restart_keys, restart_values)
         except ValueError as exc:
-            return f"❌ {exc}", gr.update()
+            return f"❌ {exc}", gr.update(), gr.update()
         all_updates = {**live_updates, **restart_updates}
         path = _save_to_env(all_updates)
 
@@ -230,9 +222,7 @@ def build_system_tab(assistant_state: gr.State | None = None):
         ver = save_version(
             "general",
             snapshot_content,
-            keyword=keyword,
             name=name,
-            label=label,
             description=desc,
         )
         set_active_version("general", ver.id)
@@ -247,14 +237,16 @@ def build_system_tab(assistant_state: gr.State | None = None):
             f"♻️ Saved to `{path}`, snapshotted as `{ver.id}`. "
             "Restarting now — reconnect in a few seconds.",
             gr.update(choices=version_choices("general"), value=ver.id),
+            gr.update(value=_auto_name("system")),
         )
 
     def on_select_version(version_id):
+        no_change = [gr.update() for _ in all_inputs]
         if not version_id:
-            return [gr.update() for _ in all_inputs] + [""]
+            return no_change + ["", gr.update()]
         v = get_version("general", version_id)
         if v is None:
-            return [gr.update() for _ in all_inputs] + [f"Version `{version_id}` not found."]
+            return no_change + [f"Version `{version_id}` not found.", gr.update()]
         content = v.content or {}
         updates = []
         for key in all_keys:
@@ -264,7 +256,10 @@ def build_system_tab(assistant_state: gr.State | None = None):
                 continue
             raw = content.get(key, "")
             updates.append(gr.update(value=_coerce_for_input(var, str(raw))))
-        return updates + [f"Loaded `{v.id}` into form — click **Save new version** to apply."]
+        return updates + [
+            f"Loaded `{v.id}` into form — click **Save new version** to apply.",
+            gr.update(value=_auto_name("system")),
+        ]
 
     def on_delete(version_id):
         if not version_id:
@@ -318,8 +313,8 @@ def build_system_tab(assistant_state: gr.State | None = None):
 
     save_btn.click(
         fn=on_save,
-        inputs=[new_keyword_in, new_name_in, new_label_in, new_desc_in, *all_inputs],
-        outputs=[status_md, version_dd],
+        inputs=[new_name_in, new_desc_in, *all_inputs],
+        outputs=[status_md, version_dd, new_name_in],
     )
     delete_btn.click(
         fn=on_delete,
@@ -329,7 +324,7 @@ def build_system_tab(assistant_state: gr.State | None = None):
     version_dd.change(
         fn=on_select_version,
         inputs=[version_dd],
-        outputs=[*all_inputs, status_md],
+        outputs=[*all_inputs, status_md, new_name_in],
     )
     apply_btn.click(fn=on_apply, inputs=[version_dd], outputs=[status_md])
     refresh_btn.click(fn=on_refresh, outputs=[version_dd])
