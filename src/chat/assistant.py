@@ -10,7 +10,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
-from src.agents import create_ingestion_agent, create_main_agent, ingest_page
+from src.agents import create_ingestion_agent, create_main_agent, ingest_page, run_agent
+from src.agents.doc_context import inline_pages_block, manifest_block, should_inline
 from src.agents.main import MainDeps
 from src.agents_config import load_agents_config, load_personal_info, load_prompts_config
 from src.logging import setup_logging
@@ -42,6 +43,7 @@ class ChatAssistant:
         logger.info("Initializing ChatAssistant backend=%s", self.config.default_backend)
         self._init_agents()
         self.inline_doc_max_chars = int(os.getenv("INLINE_DOC_MAX_CHARS", "20000"))
+        self.inline_doc_max_pages = int(os.getenv("INLINE_DOC_MAX_PAGES", "3"))
         self.pdf_json_max_bytes = int(os.getenv("PDF_JSON_MAX_BYTES", "2000000"))
         self.pdf_json_dir = os.getenv("PDF_JSON_DIR", "data")
         # SQLite dir for all database files
@@ -64,7 +66,7 @@ class ChatAssistant:
     async def chat(self, user_message: str) -> str:
         """Run one chat turn against the main agent."""
         prompt, deps = self.prepare_turn(user_message)
-        result = await self.main.run(prompt, deps=deps)
+        result = await run_agent(self.main, prompt, deps=deps, label="chat")
         reply = result.output if hasattr(result, "output") else result
         return self.finalize_turn(reply)
 
@@ -83,23 +85,15 @@ class ChatAssistant:
             pi_block = f"{self.personal_info.to_prompt_context()}\n\n"
 
         doc_block = ""
-        if self.enriched_doc and self.enriched_doc.total_chars() <= self.inline_doc_max_chars:
-            # Inline enriched pages for small docs
-            pages_summary = "\n".join(
-                (
-                    f"[Page {p.page_num}] {p.text[:500]}..."
-                    if len(p.text) > 500
-                    else f"[Page {p.page_num}] {p.text}"
-                )
-                for p in self.enriched_doc.pages
+        if should_inline(self.enriched_doc, self.inline_doc_max_pages):
+            doc_block = f"Document pages:\n{inline_pages_block(self.enriched_doc)}\n\n"
+            logger.info(
+                "turn=%d inline_enriched=true pages=%d",
+                len(self.history) // 2,
+                len(self.enriched_doc.pages),
             )
-            doc_block = f"Document pages:\n{pages_summary}\n\n"
-            logger.info("turn=%d inline_enriched=true", len(self.history) // 2)
-        elif self.text and len(self.text) <= self.inline_doc_max_chars:
-            doc_block = f"Document text (full):\n{self.text}\n\n"
-            logger.info("turn=%d inline_doc=true chars=%d", len(self.history) // 2, len(self.text))
-        elif self.text:
-            doc_block = f"Document text (truncated):\n{self.text[:self.inline_doc_max_chars]}\n\n"
+        elif self.enriched_doc or self.text:
+            doc_block = f"{manifest_block(self.enriched_doc, self.text)}\n\n"
             logger.info("turn=%d inline_doc=false use_tools=true", len(self.history) // 2)
 
         prompt = (

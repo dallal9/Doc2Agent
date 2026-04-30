@@ -166,6 +166,18 @@ ENV_VARS: list[EnvVar] = [
         "live",
     ),
     EnvVar(
+        "INLINE_DOC_MAX_PAGES",
+        "int",
+        "3",
+        "Query",
+        (
+            "Inline the full document into the prompt only when its page count is at or "
+            "below this. Larger docs are summarized as a page manifest and the agent uses "
+            "its tools."
+        ),
+        "live",
+    ),
+    EnvVar(
         "AGENTS_CONFIG_PATH",
         "str",
         None,

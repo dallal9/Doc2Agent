@@ -19,6 +19,7 @@ from collections import defaultdict
 from typing import Any, Awaitable, Callable
 
 from src.agents import run_agent
+from src.agents.doc_context import inline_pages_block, manifest_block, should_inline
 from src.agents.main import MainDeps
 from src.chat import ChatAssistant
 from src.logging import setup_logging
@@ -160,21 +161,11 @@ def _build_eval_prompt(
 
     doc_block = ""
     if context_mode == "full_doc":
-        max_chars = assistant.inline_doc_max_chars
-        if assistant.enriched_doc and assistant.enriched_doc.total_chars() <= max_chars:
-            pages_summary = "\n".join(
-                (
-                    f"[Page {p.page_num}] {p.text[:500]}..."
-                    if len(p.text) > 500
-                    else f"[Page {p.page_num}] {p.text}"
-                )
-                for p in assistant.enriched_doc.pages
-            )
-            doc_block = f"Document pages:\n{pages_summary}\n\n"
-        elif assistant.text and len(assistant.text) <= max_chars:
-            doc_block = f"Document text (full):\n{assistant.text}\n\n"
-        elif assistant.text:
-            doc_block = f"Document text (truncated):\n{assistant.text[:max_chars]}\n\n"
+        max_pages = getattr(assistant, "inline_doc_max_pages", 3)
+        if should_inline(assistant.enriched_doc, max_pages):
+            doc_block = f"Document pages:\n{inline_pages_block(assistant.enriched_doc)}\n\n"
+        elif assistant.enriched_doc or assistant.text:
+            doc_block = f"{manifest_block(assistant.enriched_doc, assistant.text)}\n\n"
     elif context_mode == "spans_only":
         doc_block = _spans_block(spans, assistant.store, assistant.document_id)
     # "question_only" → no doc_block
