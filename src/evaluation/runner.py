@@ -161,16 +161,20 @@ def _build_eval_prompt(
     doc_block = ""
     if context_mode == "full_doc":
         max_chars = assistant.inline_doc_max_chars
-        if assistant.enriched_doc and assistant.enriched_doc.total_chars() <= max_chars:
-            pages_summary = "\n".join(
-                (
-                    f"[Page {p.page_num}] {p.text[:500]}..."
-                    if len(p.text) > 500
-                    else f"[Page {p.page_num}] {p.text}"
-                )
-                for p in assistant.enriched_doc.pages
-            )
-            doc_block = f"Document pages:\n{pages_summary}\n\n"
+        if assistant.enriched_doc:
+            remaining_chars = max_chars
+            page_chunks: list[str] = []
+            for p in assistant.enriched_doc.pages:
+                if remaining_chars <= 0:
+                    break
+                page_text = p.text or ""
+                if not page_text:
+                    continue
+                chunk = page_text[:remaining_chars]
+                page_chunks.append(f"[Page {p.page_num}] {chunk}")
+                remaining_chars -= len(chunk)
+            if page_chunks:
+                doc_block = f"Document pages:\n" + "\n".join(page_chunks) + "\n\n"
         elif assistant.text and len(assistant.text) <= max_chars:
             doc_block = f"Document text (full):\n{assistant.text}\n\n"
         elif assistant.text:

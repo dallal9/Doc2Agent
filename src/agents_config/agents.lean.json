@@ -15,7 +15,7 @@
       "model": "qwen3.5:9b",
       "temperature": 0.2,
       "backend": "local",
-      "max_turns": 8
+      "max_turns": 12
     },
     "reviewer": {
       "model": "qwen3.5:9b",
