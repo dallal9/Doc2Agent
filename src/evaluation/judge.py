@@ -13,8 +13,9 @@ from typing import Any, Awaitable, Callable
 
 from pydantic import BaseModel, Field
 from pydantic_ai import Agent
+from pydantic_ai.models.openai import OpenAIChatModel
 
-from src.agents.base import get_model_string, run_agent
+from src.agents.base import build_model, run_agent
 from src.chat import ChatAssistant
 from src.logging import setup_logging
 
@@ -45,8 +46,8 @@ def _resolve_judge_agent_config(
     *,
     model_override: str | None,
     backend_override: str | None,
-) -> tuple[str, str]:
-    """Resolve (model_string, backend_name) for the judge agent."""
+) -> tuple[OpenAIChatModel, str]:
+    """Resolve (model, backend_name) for the judge agent."""
     cfg = assistant.config
     agent_cfg = (
         cfg.agents.get("judge") or cfg.agents.get("reviewer") or next(iter(cfg.agents.values()))
@@ -55,7 +56,7 @@ def _resolve_judge_agent_config(
     if backend_name not in cfg.backends:
         raise ValueError(f"Unknown backend for judge: {backend_name}")
     backend_cfg = cfg.backends[backend_name]
-    return get_model_string(backend_cfg, model_override or agent_cfg.model), backend_name
+    return build_model(backend_cfg, model_override or agent_cfg.model), backend_name
 
 
 def _create_judge_agent(
@@ -65,11 +66,11 @@ def _create_judge_agent(
     backend_override: str | None = None,
 ) -> Agent[None, JudgeOutput]:
     """Build a one-shot per-metric judge agent (legacy; kept for compatibility)."""
-    model_string, _ = _resolve_judge_agent_config(
+    model, _ = _resolve_judge_agent_config(
         assistant, model_override=model_override, backend_override=backend_override
     )
     agent: Agent[None, JudgeOutput] = Agent(
-        model_string,
+        model,
         system_prompt=assistant.prompts.judge,
         output_type=JudgeOutput,
     )
@@ -83,11 +84,11 @@ def _create_batch_judge_agent(
     backend_override: str | None = None,
 ) -> Agent[None, BatchJudgeOutput]:
     """Build a judge agent that scores all selected metrics in one call."""
-    model_string, _ = _resolve_judge_agent_config(
+    model, _ = _resolve_judge_agent_config(
         assistant, model_override=model_override, backend_override=backend_override
     )
     agent: Agent[None, BatchJudgeOutput] = Agent(
-        model_string,
+        model,
         system_prompt=assistant.prompts.judge,
         output_type=BatchJudgeOutput,
     )

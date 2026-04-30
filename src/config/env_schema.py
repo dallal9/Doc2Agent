@@ -56,6 +56,22 @@ ENV_VARS: list[EnvVar] = [
         "OpenRouter API key for cloud inference.",
         "live",
     ),
+    EnvVar(
+        "LLM_MAX_RETRIES",
+        "int",
+        "2",
+        "LLM Backend",
+        "Retries on transient LLM errors (5xx, 429/408, network/timeouts). 4xx are not retried.",
+        "live",
+    ),
+    EnvVar(
+        "LLM_RETRY_BACKOFF_S",
+        "float",
+        "1.0",
+        "LLM Backend",
+        "Base seconds for exponential backoff between retries (jittered).",
+        "live",
+    ),
     # Default Models — referenced from agents.json via ${VAR}
     EnvVar(
         "DEFAULT_MODEL",

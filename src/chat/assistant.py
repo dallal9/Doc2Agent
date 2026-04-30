@@ -83,18 +83,26 @@ class ChatAssistant:
             pi_block = f"{self.personal_info.to_prompt_context()}\n\n"
 
         doc_block = ""
-        if self.enriched_doc and self.enriched_doc.total_chars() <= self.inline_doc_max_chars:
-            # Inline enriched pages for small docs
-            pages_summary = "\n".join(
-                (
-                    f"[Page {p.page_num}] {p.text[:500]}..."
-                    if len(p.text) > 500
-                    else f"[Page {p.page_num}] {p.text}"
+        if self.enriched_doc:
+            remaining_chars = self.inline_doc_max_chars
+            page_chunks: list[str] = []
+            for p in self.enriched_doc.pages:
+                if remaining_chars <= 0:
+                    break
+                page_text = p.text or ""
+                if not page_text:
+                    continue
+                chunk = page_text[:remaining_chars]
+                page_chunks.append(f"[Page {p.page_num}] {chunk}")
+                remaining_chars -= len(chunk)
+            if page_chunks:
+                pages_summary = "\n".join(page_chunks)
+                doc_block = f"Document pages:\n{pages_summary}\n\n"
+                logger.info(
+                    "turn=%d inline_enriched=true chars=%d",
+                    len(self.history) // 2,
+                    self.inline_doc_max_chars - remaining_chars,
                 )
-                for p in self.enriched_doc.pages
-            )
-            doc_block = f"Document pages:\n{pages_summary}\n\n"
-            logger.info("turn=%d inline_enriched=true", len(self.history) // 2)
         elif self.text and len(self.text) <= self.inline_doc_max_chars:
             doc_block = f"Document text (full):\n{self.text}\n\n"
             logger.info("turn=%d inline_doc=true chars=%d", len(self.history) // 2, len(self.text))
