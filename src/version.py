@@ -10,7 +10,8 @@ from __future__ import annotations
 
 import re
 from functools import lru_cache
-from importlib.metadata import PackageNotFoundError, version as _meta_version
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _meta_version
 from pathlib import Path
 
 PACKAGE_NAME = "Doc2Agent"
