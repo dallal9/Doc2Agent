@@ -255,6 +255,14 @@ ENV_VARS: list[EnvVar] = [
         "Context mode for eval queries: full_doc | spans_only | question_only.",
         "live",
     ),
+    EnvVar(
+        "JUDGE_CONCURRENCY",
+        "int",
+        "1",
+        "Evaluation",
+        "Default max predictions judged in parallel per LLM judge run. Keep at 1 for local Ollama.",
+        "live",
+    ),
     # Personal Info
     EnvVar(
         "PERSONAL_INFO_JSON",

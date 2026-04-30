@@ -2,11 +2,30 @@
 
 from __future__ import annotations
 
+import json
+
 import gradio as gr
 
 from app.ui_components import fmt_duration_ms, fmt_score, render_kpis, render_table
 from src.chat import ChatAssistant
 from src.logging import setup_logging
+
+
+def _config_app_version(config_json: object) -> str:
+    """Pull `app_version` out of a stored config dict / JSON string."""
+    if not config_json:
+        return "—"
+    if isinstance(config_json, str):
+        try:
+            data = json.loads(config_json)
+        except json.JSONDecodeError:
+            return "—"
+    elif isinstance(config_json, dict):
+        data = config_json
+    else:
+        return "—"
+    return data.get("app_version") or "—"
+
 
 logger = setup_logging("dashboard_tab")
 
@@ -160,6 +179,7 @@ def _evaluation_overview(
                 skipped,
                 fmt_duration_ms(timing["total_ms"]) if timing["count"] else "—",
                 fmt_duration_ms(timing["avg_ms"]),
+                _config_app_version(r.get("agent_config_json")),
                 r.get("created_at") or "—",
             ]
         )
@@ -213,6 +233,7 @@ def _evaluation_overview(
                 jr["judge_type"],
                 jr["status"],
                 agg_summary or "—",
+                _config_app_version(jr.get("judge_config_snapshot")),
                 jr.get("created_at") or "—",
             ]
         )
@@ -294,13 +315,14 @@ def _evaluation_overview(
             "Skipped",
             "Total time",
             "Avg time",
+            "App ver.",
             "Created",
         ],
         runs_rows,
         empty_msg="No evaluation runs yet.",
     )
     judge_table = _table(
-        ["Name", "Eval run", "Judge", "Status", "Aggregates", "Created"],
+        ["Name", "Eval run", "Judge", "Status", "Aggregates", "App ver.", "Created"],
         judge_rows,
         empty_msg="No judge runs yet.",
     )

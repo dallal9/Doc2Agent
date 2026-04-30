@@ -22,6 +22,7 @@ from src.config_versions import apply_versions, get_version, version_choices
 from src.evaluation import run_evaluation, run_llm_judge
 from src.evaluation.runner import normalize_config
 from src.logging import setup_logging
+from src.version import app_version
 
 METRIC_TYPES = ["bool", "int", "float"]
 AGGREGATIONS = ["avg", "sum", "min", "max"]
@@ -258,6 +259,7 @@ async def on_start_run(
     agent_version_id,
     general_version_id,
     assistant,
+    progress=gr.Progress(track_tqdm=False),
 ):
     if assistant is None:
         assistant = ChatAssistant()
@@ -289,6 +291,7 @@ async def on_start_run(
     general_version_id = (general_version_id or "").strip() or None
     config["agent_version_id"] = agent_version_id
     config["general_version_id"] = general_version_id
+    config["app_version"] = app_version()
 
     run_id = assistant.store.create_evaluation_run(
         dataset_id=dataset_id,
@@ -314,7 +317,17 @@ async def on_start_run(
             if agent_version_id or general_version_id:
                 _reload_assistant_config(assistant)
             try:
-                summary = await run_evaluation(assistant=assistant, run_id=run_id, config=config)
+
+                def _eval_progress(done: int, total: int, label: str) -> None:
+                    frac = (done / total) if total else 0.0
+                    progress(frac, desc=f"Eval {done}/{total} • {label[:40]}")
+
+                summary = await run_evaluation(
+                    assistant=assistant,
+                    run_id=run_id,
+                    config=config,
+                    on_progress=_eval_progress,
+                )
             finally:
                 if agent_version_id or general_version_id:
                     # Restore live config inside the apply_versions ctx so the
@@ -1046,6 +1059,7 @@ def on_create_judge_run(
         "concurrency": concurrency_int,
         "agent_version_id": eval_cfg.get("agent_version_id"),
         "general_version_id": eval_cfg.get("general_version_id"),
+        "app_version": app_version(),
     }
     jr_id = assistant.store.create_judge_run(
         evaluation_run_id=eval_run_id,
@@ -1208,7 +1222,7 @@ def _save_manual_scores_from_state(state, score_values, comment_values, assistan
     return msg
 
 
-async def on_run_llm_judge(judge_run_id, assistant):
+async def on_run_llm_judge(judge_run_id, assistant, progress=gr.Progress(track_tqdm=False)):
     if assistant is None:
         assistant = ChatAssistant()
     if not judge_run_id:
@@ -1220,12 +1234,18 @@ async def on_run_llm_judge(judge_run_id, assistant):
         with apply_versions(agent_version_id=agent_v, general_version_id=general_v):
             if agent_v or general_v:
                 _reload_assistant_config(assistant)
+
+            def _judge_progress(done: int, total: int, label: str) -> None:
+                frac = (done / total) if total else 0.0
+                progress(frac, desc=f"Judge {done}/{total} • {label[:40]}")
+
             summary = await run_llm_judge(
                 assistant=assistant,
                 judge_run_id=judge_run_id,
                 model_override=snap.get("model") or None,
                 backend_override=snap.get("backend") or None,
                 concurrency=snap.get("concurrency"),
+                on_progress=_judge_progress,
             )
         if agent_v or general_v:
             _reload_assistant_config(assistant)

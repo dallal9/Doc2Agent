@@ -1,0 +1,46 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  github-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Read description from scripts/release.yaml
+        id: notes
+        run: |
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import pathlib, yaml, os
+          data = yaml.safe_load(pathlib.Path("scripts/release.yaml").read_text(encoding="utf-8")) or {}
+          version = (data.get("version") or "").strip()
+          description = (data.get("description") or "").rstrip()
+          tag = os.environ["GITHUB_REF_NAME"]
+          # If release.yaml's version doesn't match the tag, fall back to the
+          # tag's annotated message body.
+          if tag != f"v{version}":
+              description = ""
+          # GITHUB_OUTPUT multi-line value uses heredoc syntax.
+          print(f"description<<__END__")
+          print(description)
+          print("__END__")
+          PY
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          body: ${{ steps.notes.outputs.description }}
+          generate_release_notes: ${{ steps.notes.outputs.description == '' }}
+          draft: false
+          prerelease: false
