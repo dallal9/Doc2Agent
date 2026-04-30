@@ -258,6 +258,7 @@ async def on_start_run(
     agent_version_id,
     general_version_id,
     assistant,
+    progress=gr.Progress(track_tqdm=False),
 ):
     if assistant is None:
         assistant = ChatAssistant()
@@ -314,7 +315,17 @@ async def on_start_run(
             if agent_version_id or general_version_id:
                 _reload_assistant_config(assistant)
             try:
-                summary = await run_evaluation(assistant=assistant, run_id=run_id, config=config)
+
+                def _eval_progress(done: int, total: int, label: str) -> None:
+                    frac = (done / total) if total else 0.0
+                    progress(frac, desc=f"Eval {done}/{total} • {label[:40]}")
+
+                summary = await run_evaluation(
+                    assistant=assistant,
+                    run_id=run_id,
+                    config=config,
+                    on_progress=_eval_progress,
+                )
             finally:
                 if agent_version_id or general_version_id:
                     # Restore live config inside the apply_versions ctx so the
@@ -1208,7 +1219,7 @@ def _save_manual_scores_from_state(state, score_values, comment_values, assistan
     return msg
 
 
-async def on_run_llm_judge(judge_run_id, assistant):
+async def on_run_llm_judge(judge_run_id, assistant, progress=gr.Progress(track_tqdm=False)):
     if assistant is None:
         assistant = ChatAssistant()
     if not judge_run_id:
@@ -1220,12 +1231,18 @@ async def on_run_llm_judge(judge_run_id, assistant):
         with apply_versions(agent_version_id=agent_v, general_version_id=general_v):
             if agent_v or general_v:
                 _reload_assistant_config(assistant)
+
+            def _judge_progress(done: int, total: int, label: str) -> None:
+                frac = (done / total) if total else 0.0
+                progress(frac, desc=f"Judge {done}/{total} • {label[:40]}")
+
             summary = await run_llm_judge(
                 assistant=assistant,
                 judge_run_id=judge_run_id,
                 model_override=snap.get("model") or None,
                 backend_override=snap.get("backend") or None,
                 concurrency=snap.get("concurrency"),
+                on_progress=_judge_progress,
             )
         if agent_v or general_v:
             _reload_assistant_config(assistant)
