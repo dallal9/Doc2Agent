@@ -765,22 +765,11 @@ def create_app() -> gr.Blocks:
         adhoc_assistant_state = gr.State(value=None)
         with gr.Tabs():
             with gr.Tab("Switch File ID"):
-                (
-                    adhoc_source_dd,
-                    adhoc_old_doc_dd,
-                    adhoc_new_doc_dd,
-                    _,
-                    _,
-                ) = build_switch_file_tab(adhoc_assistant_state)
+                adhoc_source_dd, adhoc_repls = build_switch_file_tab(adhoc_assistant_state)
         adhoc_page.load(
             fn=on_adhoc_tab_load,
             inputs=[adhoc_assistant_state],
-            outputs=[
-                adhoc_assistant_state,
-                adhoc_source_dd,
-                adhoc_old_doc_dd,
-                adhoc_new_doc_dd,
-            ],
+            outputs=[adhoc_assistant_state, adhoc_source_dd, *adhoc_repls],
         )
 
     return demo
