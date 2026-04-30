@@ -22,6 +22,7 @@ from src.config_versions import apply_versions, get_version, version_choices
 from src.evaluation import run_evaluation, run_llm_judge
 from src.evaluation.runner import normalize_config
 from src.logging import setup_logging
+from src.version import app_version
 
 METRIC_TYPES = ["bool", "int", "float"]
 AGGREGATIONS = ["avg", "sum", "min", "max"]
@@ -290,6 +291,7 @@ async def on_start_run(
     general_version_id = (general_version_id or "").strip() or None
     config["agent_version_id"] = agent_version_id
     config["general_version_id"] = general_version_id
+    config["app_version"] = app_version()
 
     run_id = assistant.store.create_evaluation_run(
         dataset_id=dataset_id,
@@ -1057,6 +1059,7 @@ def on_create_judge_run(
         "concurrency": concurrency_int,
         "agent_version_id": eval_cfg.get("agent_version_id"),
         "general_version_id": eval_cfg.get("general_version_id"),
+        "app_version": app_version(),
     }
     jr_id = assistant.store.create_judge_run(
         evaluation_run_id=eval_run_id,

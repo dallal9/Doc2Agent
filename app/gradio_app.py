@@ -32,6 +32,7 @@ from app.utils import ChatResult, render_chat_with_cache
 from src.agents import run_agent
 from src.chat import ChatAssistant
 from src.logging import setup_logging
+from src.version import app_version
 
 logger = setup_logging("gradio_app")
 
@@ -415,6 +416,9 @@ def build_chat_tab():
         with gr.Column(scale=1, min_width=260):
             _doc2agent_logo_block(hero=False)
             gr.Markdown(f"### {ASSISTANT_NAME}")
+            gr.Markdown(
+                f"<small style='color:var(--body-text-color-subdued)'>" f"v{app_version()}</small>"
+            )
             file_upload = gr.File(label="Upload PDF", file_types=[".pdf"], type="filepath")
             status_md = gr.Markdown("No file attached.")
             doc_dropdown = gr.Dropdown(label="Cached Documents", choices=[], interactive=True)
