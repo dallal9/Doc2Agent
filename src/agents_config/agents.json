@@ -12,27 +12,27 @@
   },
   "agents": {
     "main": {
-      "model": "deepseek/deepseek-v3.2",
+      "model": "qwen3.5:9b",
       "temperature": 0.2,
-      "backend": "openrouter",
+      "backend": "local",
       "max_turns": 12
     },
     "reviewer": {
-      "model": "deepseek/deepseek-v3.2",
+      "model": "qwen3.5:9b",
       "temperature": 0.1,
-      "backend": "openrouter",
+      "backend": "local",
       "max_turns": 6
     },
     "validator": {
-      "model": "deepseek/deepseek-v3.2",
+      "model": "qwen3.5:9b",
       "temperature": 0.1,
-      "backend": "openrouter",
+      "backend": "local",
       "max_turns": 8
     },
     "ingestion": {
-      "model": "deepseek/deepseek-v3.2",
+      "model": "qwen3.5:9b",
       "temperature": 0.0,
-      "backend": "openrouter",
+      "backend": "local",
       "max_turns": 1
     },
     "judge": {
