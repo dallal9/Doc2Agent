@@ -1,4 +1,4 @@
-# Edit this file before running `scripts/release.sh`.
+# Edit this file before running `release/release.sh`.
 # - `version` is the new release version (semver, no leading "v").
 # - `description` is the release notes for this version (markdown).
 version: 1.0.1

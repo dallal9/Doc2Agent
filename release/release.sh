@@ -3,7 +3,7 @@
 # Release helper — designed to run on a feature branch that will become a PR.
 #
 # What it does:
-#   1. Reads `scripts/release.yaml` (you should have edited it already).
+#   1. Reads `release/release.yaml` (you should have edited it already).
 #   2. Bumps the version in `pyproject.toml` to match.
 #   3. Commits both files on the current branch.
 #   4. Prints the exact commands you need to run after the PR is merged
@@ -12,15 +12,15 @@
 # It does NOT push, NOT tag, NOT touch `main`. Branch protection stays intact.
 #
 # Usage:
-#   ./scripts/release.sh             # bump + commit on current branch
-#   ./scripts/release.sh --dry-run   # show what would happen, no changes
+#   ./release/release.sh             # bump + commit on current branch
+#   ./release/release.sh --dry-run   # show what would happen, no changes
 #
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-YAML="scripts/release.yaml"
+YAML="release/release.yaml"
 PYPROJECT="pyproject.toml"
 DRY_RUN=0
 [[ "${1:-}" == "--dry-run" ]] && DRY_RUN=1
@@ -135,10 +135,10 @@ Next steps (do these by hand, since main is protected):
   3. Tag the merge commit and push the tag (this triggers the release
      workflow which creates the GitHub Release):
 
-       git tag -a $TAG -m "$TAG" -m "\$(uv run python -c 'import yaml,pathlib; print(yaml.safe_load(pathlib.Path("scripts/release.yaml").read_text())["description"].rstrip())')"
+       git tag -a $TAG -m "$TAG" -m "\$(uv run python -c 'import yaml,pathlib; print(yaml.safe_load(pathlib.Path("release/release.yaml").read_text())["description"].rstrip())')"
        git push origin $TAG
 
-     (Or just run: ./scripts/tag-release.sh — same thing.)
+     (Or just run: ./release/tag-release.sh — same thing.)
 
 ──────────────────────────────────────────────────────────────────────
 EOF

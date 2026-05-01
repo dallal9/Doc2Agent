@@ -16,12 +16,12 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Read description from scripts/release.yaml
+      - name: Read description from release/release.yaml
         id: notes
         run: |
           python - <<'PY' >> "$GITHUB_OUTPUT"
           import pathlib, yaml, os
-          data = yaml.safe_load(pathlib.Path("scripts/release.yaml").read_text(encoding="utf-8")) or {}
+          data = yaml.safe_load(pathlib.Path("release/release.yaml").read_text(encoding="utf-8")) or {}
           version = (data.get("version") or "").strip()
           description = (data.get("description") or "").rstrip()
           tag = os.environ["GITHUB_REF_NAME"]

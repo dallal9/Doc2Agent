@@ -12,27 +12,27 @@
   },
   "agents": {
     "main": {
-      "model": "qwen3.5:9b",
+      "model": "anthropic/claude-sonnet-4.6",
       "temperature": 0.2,
-      "backend": "local",
+      "backend": "openrouter",
       "max_turns": 8
     },
     "reviewer": {
-      "model": "qwen3.5:9b",
+      "model": "anthropic/claude-sonnet-4.6",
       "temperature": 0.1,
-      "backend": "local",
+      "backend": "openrouter",
       "max_turns": 1
     },
     "validator": {
-      "model": "qwen3.5:9b",
+      "model": "anthropic/claude-sonnet-4.6",
       "temperature": 0.1,
-      "backend": "local",
+      "backend": "openrouter",
       "max_turns": 1
     },
     "ingestion": {
-      "model": "qwen3.5:9b",
+      "model": "anthropic/claude-sonnet-4.6",
       "temperature": 0.0,
-      "backend": "local",
+      "backend": "openrouter",
       "max_turns": 1
     },
     "judge": {
