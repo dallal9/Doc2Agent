@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Tag the current commit using version + description from scripts/release.yaml,
+# Tag the current commit using version + description from release/release.yaml,
 # and push the tag to origin. Run this on `main` after the release PR is merged.
 #
 # This step is what triggers .github/workflows/release.yml to publish the
@@ -11,7 +11,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-YAML="scripts/release.yaml"
+YAML="release/release.yaml"
 if [[ ! -f "$YAML" ]]; then
   echo "error: $YAML not found" >&2
   exit 1

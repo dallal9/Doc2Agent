@@ -1,0 +1,11 @@
+# Edit this file before running `release/release.sh`.
+# - `version` is the new release version (semver, no leading "v").
+# - `description` is the release notes for this version (markdown).
+version: 1.0.0
+description: |
+  ## Highlights
+
+  - First public release of Doc2Agent, a document-to-agent workflow for
+    loading PDFs, chatting with document-aware agents, and evaluating answers.
+  - Includes configurable agent/system prompts, document parsing and storage,
+    evaluation datasets, judge runs, and reproducible run configuration.
