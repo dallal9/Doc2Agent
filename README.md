@@ -1,6 +1,6 @@
 # <img src="logo.svg" alt="Doc2Agent" width="600" height="160">
 
-<img src="docs/chat-preview.gif" alt="Doc2Agent Preview" width="800">
+<img src="docs/app-preview.gif" alt="Doc2Agent Preview" width="800">
 
 ![Python](https://img.shields.io/badge/python-3.10+-blue.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
@@ -13,7 +13,7 @@ A multi-agent PDF assistant with a built-in evaluation harness. Chat with docume
 
 - **Multi-agent pipeline** — a main agent backed by reviewer, validator, ingestion, and judge agents (pydantic-ai).
 - **Two interchangeable backends** — Ollama (local) and OpenRouter (cloud), selected per-agent in `agents.json`.
-- **PDF ingestion** — PyMuPDF parsing with optional LLM enrichment (headings, names, dates, keywords).
+- **PDF ingestion** — PyMuPDF parsing with optional LLM enrichment (headings, named entities, keywords).
 - **SQLite + FTS5** — full-text search across every ingested page; query cache to skip repeated LLM calls.
 - **Annotation tool** — embedded PDF.js viewer with text/page span staging and Q&A capture.
 - **Evaluation harness** — replay datasets through the chat pipeline, score predictions manually or with an LLM judge, aggregate per metric.
@@ -27,7 +27,7 @@ A multi-agent PDF assistant with a built-in evaluation harness. Chat with docume
 **Prerequisites:** Python 3.10+, [`uv`](https://github.com/astral-sh/uv), and at least one LLM backend.
 
 ```bash
-git clone <your-fork-or-repo>.git Doc2Agent
+git clone https://github.com/dallal9/Doc2Agent.git
 cd Doc2Agent
 uv sync
 cp env.example .env
@@ -38,7 +38,7 @@ The app opens at `http://localhost:7860`.
 
 ### Pick a backend
 
-Doc2Agent ships with two backends defined in `src/agents_config/agents.json`. `default_backend` is `local`; each agent can override.
+Doc2Agent ships with two backends defined in `src/agents_config/agents.json`. `default_backend` is `local`; each agent can override. In the shipped file every agent currently overrides to `openrouter`, so for Option A you'll edit each agent's `backend` to `local`.
 
 **Option A — Ollama (local).** Pull the models you want and point each agent at them:
 
@@ -182,7 +182,7 @@ The Gradio app has a navbar with one route per page; some pages have inner tabs.
 
 ### Edit agents and prompts from the UI
 
-1. **Config → Agent Config**: edit `agents.json` or `prompts.json`, save. A snapshot is written under `src/config_versions/`.
+1. **Config → Agent Config**: edit `agents.json` or `prompts.json`, save. A snapshot is written under `data/config_versions/agent/`.
 2. In **Evaluation → Execution Run**, pin a specific agent-config version for the run so it's reproducible.
 
 ### Switch backends (Ollama ↔ OpenRouter)
@@ -280,7 +280,7 @@ A single SQLite database (under `PDF_SQLITE_DIR`) holds everything:
 - `chat_sessions`, `chat_messages` — chat history.
 - `annotation_sets`, `annotations`, `annotation_spans` — manual annotations and their span references.
 - `datasets`, `dataset_annotations` — datasets and the annotations they include.
-- Evaluation tables — runs, predictions, judge runs, per-metric judgments.
+- Evaluation tables — metric definitions, runs, predictions, judge runs, per-metric judgments.
 
 ---
 
@@ -308,16 +308,18 @@ Doc2Agent/
 │   ├── annotation/            # annotation helpers
 │   ├── chat/assistant.py      # Chat orchestration
 │   ├── config/                # env_schema, env_writer (versioned saves)
-│   ├── config_versions/       # Snapshot history for system + agent configs
+│   ├── config_versions/       # Versioning library for system + agent configs
 │   ├── evaluation/            # runner.py (replay), judge.py (manual + LLM judge)
 │   ├── schemas/               # document, annotation, evaluation models
 │   ├── storage/sqlite_store.py
 │   ├── tools/                 # pdf, pdf_parser, retrieval
 │   ├── bootstrap.py           # init_app
-│   └── logging.py
+│   ├── logging.py
+│   └── version.py             # version string
+├── release/                   # Release + tag scripts (release.sh, tag-release.sh)
 ├── tests/unit/                # pytest suites per package
 ├── docs/                      # architecture, blueprint
-└── data/                      # SQLite DB + stored PDFs (gitignored)
+└── data/                      # SQLite DB, stored PDFs, config_versions/ snapshots (gitignored)
 ```
 
 ---
